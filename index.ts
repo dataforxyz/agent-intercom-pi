@@ -10,6 +10,7 @@ import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
+import { launchIntercomForkHandler, listIntercomForkHandlers } from "./fork-handler.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -636,6 +637,26 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pendingIdleMessages.push(entry);
     scheduleInboundFlush();
   }
+  async function maybeLaunchInboundForkHandler(ctx: ExtensionContext, entry: InboundMessageEntry, parentIsBusy: boolean): Promise<boolean> {
+    if (process.env.PI_INTERCOM_FORK_HANDLER === "1") return false;
+    if (!config.inboundForkHandlers.enabled) return false;
+    if (config.inboundForkHandlers.when === "busy" && !parentIsBusy) return false;
+    try {
+      const launched = await launchIntercomForkHandler(pi, ctx, entry, config.inboundForkHandlers);
+      if (launched) {
+        pi.appendEntry("intercom_fork_handler_started", {
+          messageId: entry.message.id,
+          from: entry.from.name || entry.from.id,
+          expectsReply: entry.message.expectsReply === true,
+          timestamp: Date.now(),
+        });
+      }
+      return launched;
+    } catch (error) {
+      console.error("[pi-intercom] Failed to route inbound message to fork handler:", error);
+      return false;
+    }
+  }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
@@ -666,7 +687,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (!activeContext) {
         return;
       }
-      if (!activeContext.isIdle()) {
+      const parentIsBusy = !activeContext.isIdle();
+      if (parentIsBusy) {
+        if (await maybeLaunchInboundForkHandler(activeContext, entry, true)) {
+          return;
+        }
         if (!activeContext.hasUI) {
           const activeClient = client;
           if (!message.replyTo && activeClient?.isConnected()) {
@@ -688,6 +713,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (getLiveContext(liveContext, messageGeneration)) {
+        if (await maybeLaunchInboundForkHandler(activeContext, entry, false)) {
+          return;
+        }
         sendIncomingMessage(entry, "trigger", messageGeneration);
       }
     })();
@@ -1769,6 +1797,19 @@ Usage:
   pi.registerCommand("intercom", {
     description: "Open session intercom overlay",
     handler: async (_args, ctx) => openIntercomOverlay(ctx),
+  });
+
+  pi.registerCommand("intercom-handlers", {
+    description: "List inbound intercom fork handlers: /intercom-handlers [running|complete|failed|all]",
+    handler: async (args, ctx) => {
+      const arg = args.trim();
+      const status: "running" | "complete" | "failed" | "all" = arg === "running" || arg === "complete" || arg === "failed" ? arg : "all";
+      const runs = await listIntercomForkHandlers(status);
+      const lines = runs.length === 0
+        ? ["No intercom fork handlers."]
+        : runs.map((run) => `- ${run.id} · ${run.status} · from ${run.from} · message ${run.messageId} · ${run.dir}`);
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
   });
 
   pi.registerShortcut("alt+m", {

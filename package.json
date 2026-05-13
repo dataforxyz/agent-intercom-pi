@@ -8,13 +8,14 @@
     "index.ts",
     "types.ts",
     "config.ts",
+    "fork-handler.ts",
     "reply-tracker.ts",
     "broker/**/*.ts",
     "ui/**/*.ts",
     "skills/**/*"
   ],
   "scripts": {
-    "test": "tsx --test broker/paths.test.ts broker/spawn.test.ts reply-tracker.test.ts intercom.integration.test.ts test/inline-message.test.ts"
+    "test": "tsx --test broker/paths.test.ts broker/spawn.test.ts fork-handler.test.ts reply-tracker.test.ts intercom.integration.test.ts test/inline-message.test.ts"
   },
   "keywords": [
     "pi-package"
@@ -34,5 +35,8 @@
   "dependencies": {
     "tsx": "^4.20.0",
     "typebox": "^1.1.24"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
   }
 }

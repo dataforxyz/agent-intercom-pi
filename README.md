@@ -368,7 +368,13 @@ Create `~/.pi/agent/intercom/config.json`:
   "confirmSend": false,
   "enabled": true,
   "replyHint": true,
-  "status": "researching"
+  "status": "researching",
+  "inboundForkHandlers": {
+    "enabled": false,
+    "when": "busy",
+    "notify": "ack-and-summary",
+    "triggerParentOnSummary": false
+  }
 }
 ```
 
@@ -380,6 +386,15 @@ Create `~/.pi/agent/intercom/config.json`:
 | `enabled` | true | Enable/disable intercom entirely |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
+| `inboundForkHandlers.enabled` | false | Opt in to routing inbound messages to background sibling Pi handlers instead of interrupting/queuing in the parent |
+| `inboundForkHandlers.when` | `"busy"` | Fork only while the parent is busy, or `"always"` for all inbound messages |
+| `inboundForkHandlers.notify` | `"ack-and-summary"` | Parent notification mode: `"ack-and-summary"`, `"summary"`, or `"none"` |
+| `inboundForkHandlers.piCommand` | — | Optional Pi executable override for handler launch; `PI_INTERCOM_PI_BIN` also works |
+| `inboundForkHandlers.triggerParentOnSummary` | false | Trigger a parent turn when the handler summary arrives instead of display-only delivery |
+
+Inbound fork handlers are delegated triage sessions. They receive the inbound message capsule, may answer directly when safe and derivable, and should escalate only for destructive actions, ambiguous user preference, external side effects, security/privacy/cost risk, conflict with parent work, or low confidence. For `ask` messages, handlers are instructed to reply with `intercom.send` plus the original `replyTo` id when safe so the sender is unblocked without waking the parent.
+
+Use `/intercom-handlers [running|complete|failed|all]` to inspect persisted handler runs under `~/.local/state/pi-intercom/handlers/`.
 
 For example, if you have Bun installed and want it to start the broker directly, use:
 
