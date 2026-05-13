@@ -40,6 +40,7 @@ export interface IntercomForkHandlerRun {
   pid?: number;
   cwd: string;
   parentSessionFile?: string;
+  forkSessionFile?: string;
   parentSessionId?: string;
   parentSessionName?: string;
   dir: string;
@@ -211,7 +212,8 @@ export function buildIntercomForkHandlerSystemPrompt(run: IntercomForkHandlerRun
 
 function buildHandlerArgs(run: IntercomForkHandlerRun): string[] {
   const args = ["-p", "--session-dir", run.sessionDir, "--append-system-prompt", buildIntercomForkHandlerSystemPrompt(run)];
-  if (run.parentSessionFile) args.push("--fork", run.parentSessionFile);
+  const forkSource = run.forkSessionFile || run.parentSessionFile;
+  if (forkSource) args.push("--fork", forkSource);
   args.push(`@${run.promptPath}`);
   return args;
 }
@@ -313,6 +315,15 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
   };
   const eventJson = JSON.stringify(buildEventPayload(entry, run, ctx, pi), null, 2);
   await fsp.mkdir(run.sessionDir, { recursive: true });
+  if (run.parentSessionFile) {
+    const snapshotPath = path.join(dir, "parent-session-snapshot.jsonl");
+    try {
+      await fsp.copyFile(run.parentSessionFile, snapshotPath);
+      run.forkSessionFile = snapshotPath;
+    } catch {
+      // Best effort. If snapshotting fails, fall back to the original session file.
+    }
+  }
   await fsp.writeFile(run.eventPath, `${eventJson}\n`, "utf8");
   await fsp.writeFile(run.promptPath, buildIntercomForkHandlerPrompt(entry, run, eventJson), "utf8");
   handlerRuns.push(run);
