@@ -824,9 +824,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     return byName[0]?.id ?? null;
   }
-  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): void {
+  async function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): Promise<void> {
     const now = Date.now();
-    sendIncomingMessage({
+    const entry: InboundMessageEntry = {
       from: {
         id: sender,
         name: sender,
@@ -843,7 +843,20 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         content: { text: messageText },
       },
       bodyText: messageText,
-    }, "trigger");
+    };
+    const ctx = getLiveContext();
+    if (ctx) {
+      let parentIsBusy = true;
+      try {
+        parentIsBusy = !ctx.isIdle();
+      } catch {
+        parentIsBusy = true;
+      }
+      if (await maybeLaunchInboundForkHandler(ctx, entry, parentIsBusy)) {
+        return;
+      }
+    }
+    sendIncomingMessage(entry, "followUp");
   }
   function recordSubagentDeliveryError(entryType: string, to: string, message: string, error: unknown): void {
     pi.appendEntry(entryType, {
@@ -877,7 +890,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to)) {
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        await deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }
@@ -898,7 +911,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        await deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }

@@ -352,29 +352,37 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
     stdoutFd = undefined;
     stderrFd = undefined;
     child.unref();
+
+    let launchError: unknown;
+    const spawned = await new Promise<boolean>((resolve) => {
+      const onSpawn = () => {
+        child.off("error", onError);
+        resolve(true);
+      };
+      const onError = (error: Error) => {
+        launchError = error;
+        child.off("spawn", onSpawn);
+        resolve(false);
+      };
+      child.once("spawn", onSpawn);
+      child.once("error", onError);
+    });
+    if (!spawned) {
+      await loadHandlers();
+      const failed = handlerRuns.find((candidate) => candidate.id === run.id) ?? run;
+      failed.status = "failed";
+      failed.endedAt = Date.now();
+      failed.error = launchError instanceof Error ? launchError.message : String(launchError);
+      if (!handlerRuns.some((candidate) => candidate.id === run.id)) handlerRuns.push(failed);
+      await saveHandlers();
+      console.error("[pi-intercom] Failed to launch fork handler", launchError);
+      return false;
+    }
+
     run.pid = child.pid;
     run.status = "running";
     await saveHandlers();
 
-    child.once("error", async (error) => {
-      await loadHandlers();
-      const failed = handlerRuns.find((candidate) => candidate.id === run.id);
-      if (failed) {
-        failed.status = "failed";
-        failed.endedAt = Date.now();
-        failed.error = error instanceof Error ? error.message : String(error);
-        await saveHandlers();
-      }
-      pi.sendMessage(
-        {
-          customType: HANDLER_MESSAGE_TYPE,
-          content: `Failed to launch pi-intercom fork handler ${run.id}: ${error instanceof Error ? error.message : String(error)}`,
-          display: true,
-          details: { id: run.id, messageId: entry.message.id, status: "failed" },
-        },
-        { triggerTurn: true },
-      );
-    });
     child.once("close", (code, signal) => {
       void markHandlerFinished(pi, run.id, code, signal, config.notify, config.triggerParentOnSummary).catch((error) => {
         console.error("[pi-intercom] Failed to finish fork handler", error);

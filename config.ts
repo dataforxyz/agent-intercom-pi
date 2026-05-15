@@ -3,7 +3,7 @@ import { join } from "path";
 import { homedir } from "os";
 
 export interface InboundForkHandlersConfig {
-  /** Route inbound intercom messages to background fork handlers (default: false) */
+  /** Route inbound intercom messages to background fork handlers (default: true) */
   enabled: boolean;
 
   /** When to fork: only while parent is busy, or for all inbound messages */
@@ -51,8 +51,8 @@ const defaults: IntercomConfig = {
   enabled: true,
   replyHint: true,
   inboundForkHandlers: {
-    enabled: false,
-    when: "busy",
+    enabled: true,
+    when: "always",
     notify: "ack-and-summary",
     triggerParentOnSummary: false,
   },
