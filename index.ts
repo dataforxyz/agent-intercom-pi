@@ -8,6 +8,7 @@ import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
+import { buildIntercomStatus, isForkHandlerSession } from "./fork-routing.ts";
 import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { launchIntercomForkHandler, listIntercomForkHandlers } from "./fork-handler.ts";
@@ -531,7 +532,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function currentStatus(): string {
     const activeToolName = activeTools.values().next().value;
     const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : agentRunning ? "thinking" : "idle";
-    return config.status ? `${lifecycleStatus} · ${config.status}` : lifecycleStatus;
+    return buildIntercomStatus(lifecycleStatus, config.status);
   }
   function buildRegistration(): Omit<SessionInfo, "id"> {
     const liveContext = getLiveContext();
@@ -682,6 +683,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       : undefined;
     replyTracker.recordIncomingMessage(from, message);
     const entry = { from, message, replyCommand, bodyText };
+    const fromForkHandler = isForkHandlerSession(from);
     void (async () => {
       const activeContext = getLiveContext(liveContext, messageGeneration);
       if (!activeContext) {
@@ -689,6 +691,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       }
       const parentIsBusy = !activeContext.isIdle();
       if (parentIsBusy) {
+        if (fromForkHandler) {
+          sendIncomingMessage(entry, "trigger", messageGeneration);
+          return;
+        }
         if (await maybeLaunchInboundForkHandler(activeContext, entry, true)) {
           return;
         }
@@ -713,7 +719,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (getLiveContext(liveContext, messageGeneration)) {
-        if (await maybeLaunchInboundForkHandler(activeContext, entry, false)) {
+        if (!fromForkHandler && await maybeLaunchInboundForkHandler(activeContext, entry, false)) {
           return;
         }
         sendIncomingMessage(entry, "trigger", messageGeneration);
