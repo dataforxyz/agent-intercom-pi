@@ -1375,6 +1375,11 @@ Usage:
   intercom({ action: "status" })                  → Show connection status`,
     promptSnippet:
       "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+    promptGuidelines: [
+      "intercom({action:'send'}) is non-blocking and returns immediately; intercom({action:'ask'}) blocks the current turn for up to 10 minutes waiting for a reply.",
+      "Only use action:'ask' when you actually need a human/sibling decision before continuing. For polling external state (file appears, process exits, port opens, URL becomes ready), use return_on instead so the turn can end and resume on the signal.",
+      "If you only need to notify a sibling and then keep working, use action:'send' and (if needed) register a return_on watcher on whatever artifact the sibling produces.",
+    ],
 
     parameters: Type.Object({
       action: Type.String({
