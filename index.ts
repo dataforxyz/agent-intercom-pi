@@ -965,6 +965,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   });
   pi.on("session_start", (_event, ctx) => {
+    applyForkHandlerSessionName(pi);
     if (!config.enabled) {
       return;
     }
