@@ -8,7 +8,7 @@ import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
-import { buildIntercomStatus, isForkHandlerSession } from "./fork-routing.ts";
+import { buildIntercomStatus, getForkHandlerIdentity, isForkHandlerSession } from "./fork-routing.ts";
 import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { launchIntercomForkHandler, listIntercomForkHandlers } from "./fork-handler.ts";
@@ -383,6 +383,15 @@ function buildPresenceIdentity(pi: ExtensionAPI, sessionId: string): { name: str
     name: resolveIntercomPresenceName(pi.getSessionName(), sessionId),
   };
 }
+function applyForkHandlerSessionName(pi: ExtensionAPI): void {
+  const forkHandler = getForkHandlerIdentity();
+  if (!forkHandler) return;
+  try {
+    pi.setSessionName?.(forkHandler.sessionName);
+  } catch {
+    // Best effort only; presence status still advertises fork-handler identity.
+  }
+}
 function formatSessionLabel(session: SessionInfo, duplicates: Set<string>): string {
   if (!session.name) {
     return session.id;
@@ -412,6 +421,7 @@ function firstTextContent(result: { content?: Array<{ type: string; text?: strin
   return result.content?.find((item) => item.type === "text" && typeof item.text === "string")?.text?.replace(/\*\*/g, "") ?? "";
 }
 export default function piIntercomExtension(pi: ExtensionAPI) {
+  applyForkHandlerSessionName(pi);
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   let runtimeContext: ExtensionContext | null = null;
