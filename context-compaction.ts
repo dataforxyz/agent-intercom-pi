@@ -8,7 +8,12 @@ const HANDLER_RECEIPT_METADATA_PREFIXES = [
   "Errors:",
 ];
 
+function isCompactedHandlerReceipt(content: string): boolean {
+  return /\bhandler receipt \(compacted for /i.test(content.split(/\r?\n/, 1)[0] ?? "");
+}
+
 function isRoutineSuccessfulHandlerReceipt(content: string): boolean {
+  if (isCompactedHandlerReceipt(content)) return false;
   const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const firstLine = lines[0] ?? "";
   if (!/\b(complete|completed)\b/i.test(firstLine)) return false;

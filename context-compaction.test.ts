@@ -34,6 +34,16 @@ test("compacts routine intercom handler receipts while preserving lookup pointer
   assert.ok(compacted.content.length < receipt.content.length);
 });
 
+test("does not recompact already compacted intercom handler receipts", () => {
+  const compacted = {
+    role: "custom",
+    customType: "intercom_fork_handler",
+    content: "Intercom handler receipt (compacted for model context; routine success).\nHandler: icfh_123\nOutput: /tmp/out.log (10 B)",
+  };
+
+  assert.deepEqual(compactIntercomHandlerMessages([compacted]), [compacted]);
+});
+
 test("does not compact failed intercom handler receipts", () => {
   const failed = {
     role: "custom",
