@@ -1,16 +1,11 @@
-import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
-import * as os from "node:os";
-import * as path from "node:path";
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { buildForkHandlerEnv, buildForkRunPaths, buildPiForkArgs, getForkHandlersFile, launchDetachedFork, readOptionalText, truncateText, writeJsonAtomic } from "./fork-runtime.ts";
 import type { Message, SessionInfo } from "./types.ts";
 
 const HANDLER_MESSAGE_TYPE = "intercom_fork_handler";
-const STATE_DIR = path.join(os.homedir(), ".local", "state", "pi-intercom");
-const HANDLERS_FILE = path.join(STATE_DIR, "handlers.json");
-const HANDLERS_DIR = path.join(STATE_DIR, "handlers");
+const HANDLERS_FILE = getForkHandlersFile("intercom");
 const HANDLER_SUMMARY_LIMIT_BYTES = 24 * 1024;
 
 export type InboundForkWhen = "busy" | "always";
@@ -59,10 +54,6 @@ export interface IntercomForkHandlerRun {
 
 let handlerRuns: IntercomForkHandlerRun[] = [];
 
-function atomicTempPath(filePath: string): string {
-  return `${filePath}.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}.tmp`;
-}
-
 async function loadHandlers(): Promise<void> {
   try {
     const raw = await fsp.readFile(HANDLERS_FILE, "utf8");
@@ -78,17 +69,8 @@ async function loadHandlers(): Promise<void> {
 }
 
 async function saveHandlers(): Promise<void> {
-  await fsp.mkdir(STATE_DIR, { recursive: true });
-  const tmp = atomicTempPath(HANDLERS_FILE);
   handlerRuns = handlerRuns.slice(-200);
-  await fsp.writeFile(tmp, `${JSON.stringify({ runs: handlerRuns }, null, 2)}\n`, "utf8");
-  await fsp.rename(tmp, HANDLERS_FILE);
-}
-
-function truncateText(value: string, limit = HANDLER_SUMMARY_LIMIT_BYTES): string {
-  const buf = Buffer.from(value);
-  if (buf.length <= limit) return value;
-  return `${buf.subarray(0, limit).toString("utf8")}\n[truncated ${buf.length - limit} bytes]`;
+  await writeJsonAtomic(HANDLERS_FILE, { runs: handlerRuns });
 }
 
 function shortId(value: string): string {
@@ -211,29 +193,12 @@ export function buildIntercomForkHandlerSystemPrompt(run: IntercomForkHandlerRun
 }
 
 function buildHandlerArgs(run: IntercomForkHandlerRun): string[] {
-  const args = ["-p", "--session-dir", run.sessionDir, "--append-system-prompt", buildIntercomForkHandlerSystemPrompt(run)];
-  const forkSource = run.forkSessionFile || run.parentSessionFile;
-  if (forkSource) args.push("--fork", forkSource);
-  args.push(`@${run.promptPath}`);
-  return args;
-}
-
-function closeFdBestEffort(fd: number | undefined): void {
-  if (fd === undefined) return;
-  try {
-    fs.closeSync(fd);
-  } catch {
-    // Best effort cleanup; child owns duplicated stdio fds after spawn succeeds.
-  }
-}
-
-async function readOptionalText(filePath: string): Promise<string> {
-  try {
-    return await fsp.readFile(filePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
+  return buildPiForkArgs({
+    sessionDir: run.sessionDir,
+    systemPrompt: buildIntercomForkHandlerSystemPrompt(run),
+    promptPath: run.promptPath,
+    forkFile: run.forkSessionFile || run.parentSessionFile,
+  });
 }
 
 function formatAck(run: IntercomForkHandlerRun, entry: InboundForkMessageEntry): string {
@@ -256,7 +221,7 @@ function formatSummary(run: IntercomForkHandlerRun): string {
     `Output: ${run.stdoutPath}`,
     `Errors: ${run.stderrPath}`,
     "",
-    truncateText(output),
+    truncateText(output, HANDLER_SUMMARY_LIMIT_BYTES),
   ].join("\n");
 }
 
@@ -269,7 +234,7 @@ async function markHandlerFinished(pi: ExtensionAPI, runId: string, code: number
   run.signal = signal;
   const stdout = await readOptionalText(run.stdoutPath);
   const stderr = await readOptionalText(run.stderrPath);
-  run.summary = truncateText(stdout.trim() || stderr.trim());
+  run.summary = truncateText(stdout.trim() || stderr.trim(), HANDLER_SUMMARY_LIMIT_BYTES);
   run.status = code === 0 ? "complete" : "failed";
   if (code !== 0) run.error = stderr.trim() || `handler exited with ${code ?? signal ?? "unknown status"}`;
   await saveHandlers();
@@ -294,9 +259,9 @@ async function markHandlerFinished(pi: ExtensionAPI, runId: string, code: number
 export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: ExtensionContext, entry: InboundForkMessageEntry, config: InboundForkHandlersConfig): Promise<boolean> {
   await loadHandlers();
   const id = makeHandlerId(entry.message);
-  const dir = path.join(HANDLERS_DIR, id);
+  const paths = buildForkRunPaths("intercom", id);
   const run: IntercomForkHandlerRun = {
-    id,
+    ...paths,
     eventId: `intercom_${entry.message.id}`,
     messageId: entry.message.id,
     from: entry.from.name || entry.from.id,
@@ -305,18 +270,12 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
     ...(getSessionFile(ctx) ? { parentSessionFile: getSessionFile(ctx) } : {}),
     ...(getSessionId(ctx) ? { parentSessionId: getSessionId(ctx) } : {}),
     ...(getParentSessionName(pi) ? { parentSessionName: getParentSessionName(pi) } : {}),
-    dir,
-    eventPath: path.join(dir, "event.json"),
-    promptPath: path.join(dir, "prompt.md"),
-    stdoutPath: path.join(dir, "stdout.log"),
-    stderrPath: path.join(dir, "stderr.log"),
-    sessionDir: path.join(dir, "sessions"),
     startedAt: Date.now(),
   };
   const eventJson = JSON.stringify(buildEventPayload(entry, run, ctx, pi), null, 2);
   await fsp.mkdir(run.sessionDir, { recursive: true });
   if (run.parentSessionFile) {
-    const snapshotPath = path.join(dir, "parent-session-snapshot.jsonl");
+    const snapshotPath = `${run.dir}/parent-session-snapshot.jsonl`;
     try {
       await fsp.copyFile(run.parentSessionFile, snapshotPath);
       run.forkSessionFile = snapshotPath;
@@ -331,63 +290,38 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
 
   const command = config.piCommand || process.env.PI_INTERCOM_PI_BIN || "pi";
   const args = buildHandlerArgs(run);
-  let stdoutFd: number | undefined;
-  let stderrFd: number | undefined;
   try {
-    stdoutFd = fs.openSync(run.stdoutPath, "a");
-    stderrFd = fs.openSync(run.stderrPath, "a");
-    const child = spawn(command, args, {
+    const launch = await launchDetachedFork({
+      command,
+      args,
       cwd: run.cwd,
-      detached: true,
-      env: {
+      stdoutPath: run.stdoutPath,
+      stderrPath: run.stderrPath,
+      env: buildForkHandlerEnv("intercom", run.id, {
         ...process.env,
-        PI_INTERCOM_FORK_HANDLER: "1",
-        PI_INTERCOM_FORK_HANDLER_RUN_ID: run.id,
         ...(run.parentSessionFile ? { PI_INTERCOM_PARENT_SESSION_FILE: run.parentSessionFile } : {}),
+      }),
+      onClose: (code, signal) => {
+        void markHandlerFinished(pi, run.id, code, signal, config.notify, config.triggerParentOnSummary).catch((error) => {
+          console.error("[pi-intercom] Failed to finish fork handler", error);
+        });
       },
-      stdio: ["ignore", stdoutFd, stderrFd],
     });
-    closeFdBestEffort(stdoutFd);
-    closeFdBestEffort(stderrFd);
-    stdoutFd = undefined;
-    stderrFd = undefined;
-    child.unref();
-
-    let launchError: unknown;
-    const spawned = await new Promise<boolean>((resolve) => {
-      const onSpawn = () => {
-        child.off("error", onError);
-        resolve(true);
-      };
-      const onError = (error: Error) => {
-        launchError = error;
-        child.off("spawn", onSpawn);
-        resolve(false);
-      };
-      child.once("spawn", onSpawn);
-      child.once("error", onError);
-    });
-    if (!spawned) {
+    if (!launch.ok) {
       await loadHandlers();
       const failed = handlerRuns.find((candidate) => candidate.id === run.id) ?? run;
       failed.status = "failed";
       failed.endedAt = Date.now();
-      failed.error = launchError instanceof Error ? launchError.message : String(launchError);
+      failed.error = launch.error instanceof Error ? launch.error.message : String(launch.error);
       if (!handlerRuns.some((candidate) => candidate.id === run.id)) handlerRuns.push(failed);
       await saveHandlers();
-      console.error("[pi-intercom] Failed to launch fork handler", launchError);
+      console.error("[pi-intercom] Failed to launch fork handler", launch.error);
       return false;
     }
 
-    run.pid = child.pid;
+    run.pid = launch.pid;
     run.status = "running";
     await saveHandlers();
-
-    child.once("close", (code, signal) => {
-      void markHandlerFinished(pi, run.id, code, signal, config.notify, config.triggerParentOnSummary).catch((error) => {
-        console.error("[pi-intercom] Failed to finish fork handler", error);
-      });
-    });
     if (config.notify === "ack-and-summary") {
       pi.sendMessage(
         {
@@ -401,8 +335,6 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
     }
     return true;
   } catch (error) {
-    closeFdBestEffort(stdoutFd);
-    closeFdBestEffort(stderrFd);
     run.status = "failed";
     run.endedAt = Date.now();
     run.error = error instanceof Error ? error.message : String(error);

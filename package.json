@@ -10,6 +10,8 @@
     "config.ts",
     "fork-handler.ts",
     "fork-routing.ts",
+    "fork-runtime.ts",
+    "fork-runtime-fallback.ts",
     "reply-tracker.ts",
     "broker/**/*.ts",
     "ui/**/*.ts",
@@ -31,7 +33,13 @@
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*"
+    "@mariozechner/pi-tui": "*",
+    "pi-forks": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "pi-forks": {
+      "optional": true
+    }
   },
   "dependencies": {
     "tsx": "^4.20.0",
