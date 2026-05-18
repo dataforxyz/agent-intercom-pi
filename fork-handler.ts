@@ -236,6 +236,22 @@ async function readOptionalText(filePath: string): Promise<string> {
   }
 }
 
+function fileSizeBytes(filePath: string): number | null {
+  try {
+    return fs.statSync(filePath).size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function formatHandlerLogPath(label: "Output" | "Errors", filePath: string): string {
+  const size = fileSizeBytes(filePath);
+  if (size === null) return `${label}: unavailable (${filePath}, missing)`;
+  if (label === "Errors" && size === 0) return `${label}: none (${filePath}, 0 B)`;
+  return `${label}: ${filePath} (${size} B)`;
+}
+
 function formatAck(run: IntercomForkHandlerRun, entry: InboundForkMessageEntry): string {
   const sender = entry.from.name || entry.from.id.slice(0, 8);
   return [
@@ -253,8 +269,8 @@ function formatSummary(run: IntercomForkHandlerRun): string {
     `From: ${run.from}`,
     `Message: ${run.messageId}`,
     `Exit: ${run.exitCode ?? "signal " + (run.signal ?? "unknown")}`,
-    `Output: ${run.stdoutPath}`,
-    `Errors: ${run.stderrPath}`,
+    formatHandlerLogPath("Output", run.stdoutPath),
+    formatHandlerLogPath("Errors", run.stderrPath),
     "",
     truncateText(output),
   ].join("\n");
