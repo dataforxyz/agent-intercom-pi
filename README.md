@@ -372,7 +372,7 @@ Create `~/.pi/agent/intercom/config.json`:
   "inboundForkHandlers": {
     "enabled": true,
     "when": "always",
-    "notify": "ack-and-summary",
+    "notify": "summary",
     "triggerParentOnSummary": false
   }
 }
@@ -388,7 +388,7 @@ Create `~/.pi/agent/intercom/config.json`:
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 | `inboundForkHandlers.enabled` | true | Route inbound messages to background sibling Pi handlers instead of interrupting/queuing in the parent; set false to opt out |
 | `inboundForkHandlers.when` | `"always"` | Fork all inbound messages by default; set `"busy"` to fork only while the parent is busy |
-| `inboundForkHandlers.notify` | `"ack-and-summary"` | Parent notification mode: `"ack-and-summary"`, `"summary"`, or `"none"` |
+| `inboundForkHandlers.notify` | `"summary"` | Parent notification mode: `"ack-and-summary"`, `"summary"`, or `"none"` |
 | `inboundForkHandlers.piCommand` | — | Optional Pi executable override for handler launch; `PI_INTERCOM_PI_BIN` also works |
 | `inboundForkHandlers.triggerParentOnSummary` | false | Trigger a parent turn when the handler summary arrives instead of display-only delivery |
 
