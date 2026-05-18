@@ -54,6 +54,36 @@ test("does not compact intercom handler receipts with non-empty stderr", () => {
   assert.deepEqual(compactIntercomHandlerMessages([receipt]), [receipt]);
 });
 
+test("does not compact intercom handler receipts with later actionable blocker lines", () => {
+  const receipt = {
+    role: "custom",
+    customType: "intercom_fork_handler",
+    content: [
+      "intercom fork handler complete: incoming message",
+      "Handler: icfh_123",
+      "Exit: 0",
+      "Output: /tmp/out.log (10 B)",
+      "Errors: none (/tmp/err.log, 0 B)",
+      "Routine line one.",
+      "Routine line two.",
+      "Routine line three.",
+      "BLOCKED: needs parent decision before continuing.",
+    ].join("\n"),
+  };
+
+  assert.deepEqual(compactIntercomHandlerMessages([receipt]), [receipt]);
+});
+
+test("does not compact intercom handler receipts without an explicit exit status", () => {
+  const receipt = {
+    role: "custom",
+    customType: "intercom_fork_handler",
+    content: "intercom fork handler complete: incoming message\nHandler: icfh_123\nOutput: /tmp/out.log (10 B)\nErrors: none (/tmp/err.log, 0 B)\n\nUnknown exit status stays inline.",
+  };
+
+  assert.deepEqual(compactIntercomHandlerMessages([receipt]), [receipt]);
+});
+
 test("does not recompact already compacted intercom handler receipts", () => {
   const compacted = {
     role: "custom",

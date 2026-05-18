@@ -23,14 +23,18 @@ function hasEmptyOrAbsentErrorsLine(lines: string[]): boolean {
   return /^Errors:\s*none\b/i.test(errorsLine) || /\(0 B\)\s*$/i.test(errorsLine);
 }
 
+function hasInlineActionMarker(lines: string[]): boolean {
+  return lines.some((line) => /\b(failed|failure|error|blocked|blocker|needs? attention|needs? parent|parent decision|needs? decision|action required|escalat(?:e|ed|ion))\b/i.test(line));
+}
+
 function isRoutineSuccessfulHandlerReceipt(content: string): boolean {
   if (isCompactedHandlerReceipt(content)) return false;
   const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const firstLine = lines[0] ?? "";
   if (!/\b(complete|completed)\b/i.test(firstLine)) return false;
-  if (/\b(failed|blocked|needs? attention|error)\b/i.test(firstLine)) return false;
+  if (hasInlineActionMarker(lines)) return false;
   const exitLine = lines.find((line) => /^Exit:/i.test(line));
-  return (!exitLine || /^Exit:\s*0\b/i.test(exitLine)) && hasUsableOutputLine(lines) && hasEmptyOrAbsentErrorsLine(lines);
+  return Boolean(exitLine && /^Exit:\s*0\b/i.test(exitLine) && hasUsableOutputLine(lines) && hasEmptyOrAbsentErrorsLine(lines));
 }
 
 function truncateReceiptLine(line: string, maxChars: number): string {
