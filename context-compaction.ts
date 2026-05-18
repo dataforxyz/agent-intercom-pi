@@ -14,7 +14,7 @@ function isCompactedHandlerReceipt(content: string): boolean {
 
 function hasUsableOutputLine(lines: string[]): boolean {
   const outputLine = lines.find((line) => /^Output:/i.test(line));
-  return Boolean(outputLine && !/\b(unavailable|missing)\b/i.test(outputLine) && /\(\d+ B\)\s*$/i.test(outputLine));
+  return Boolean(outputLine && /^Output:\s+\S.*\(\d+ B\)\s*$/i.test(outputLine) && !/\b(unavailable|missing)\b/i.test(outputLine));
 }
 
 function hasEmptyOrAbsentErrorsLine(lines: string[]): boolean {
@@ -24,7 +24,7 @@ function hasEmptyOrAbsentErrorsLine(lines: string[]): boolean {
 }
 
 function hasInlineActionMarker(lines: string[]): boolean {
-  return lines.some((line) => /\b(failed|failure|error|blocked|blocker|needs? attention|needs? parent|parent decision|needs? decision|action required|escalat(?:e|ed|ion))\b/i.test(line));
+  return lines.some((line) => /\b(failed|failure|error|blocked|blocker|needs?[-\s]+attention|needs?[-\s]+parent|parent[-\s]+decision|needs?[-\s]+decision|action[-\s]+required|escalat(?:e|ed|ion))\b/i.test(line));
 }
 
 function isRoutineSuccessfulHandlerReceipt(content: string): boolean {
@@ -54,7 +54,7 @@ export function compactRoutineIntercomHandlerReceipt(content: string): string {
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
     if (!isHandlerReceiptMetadataLine(line)) continue;
-    kept.push(truncateReceiptLine(line, 320));
+    kept.push(line);
     keptIndexes.add(index);
   }
   let summaryCount = 0;

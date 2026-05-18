@@ -67,11 +67,37 @@ test("does not compact intercom handler receipts with later actionable blocker l
       "Routine line one.",
       "Routine line two.",
       "Routine line three.",
-      "BLOCKED: needs parent decision before continuing.",
+      "PARENT-DECISION: choose deploy target.",
     ].join("\n"),
   };
 
   assert.deepEqual(compactIntercomHandlerMessages([receipt]), [receipt]);
+});
+
+test("preserves long intercom log lookup pointers without truncation", () => {
+  const longOutput = `/tmp/${"a".repeat(350)}/stdout.log`;
+  const longErrors = `/tmp/${"b".repeat(350)}/stderr.log`;
+  const receipt = {
+    role: "custom",
+    customType: "intercom_fork_handler",
+    content: [
+      "intercom fork handler complete: incoming message",
+      "Handler: icfh_123",
+      "Message: msg-1",
+      "From: worker",
+      "Exit: 0",
+      `Output: ${longOutput} (10 B)`,
+      `Errors: none (${longErrors}, 0 B)`,
+      "Routine summary.",
+    ].join("\n"),
+  };
+
+  const result = compactIntercomHandlerMessages([receipt]);
+  const compacted = result[0] as { content: string };
+  assert.match(compacted.content, /compacted for model context/);
+  assert.ok(compacted.content.includes(`Output: ${longOutput} (10 B)`));
+  assert.ok(compacted.content.includes(`Errors: none (${longErrors}, 0 B)`));
+  assert.doesNotMatch(compacted.content, /…/);
 });
 
 test("does not compact intercom handler receipts without an explicit exit status", () => {
