@@ -359,7 +359,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ## Config
 
-Create `~/.pi/agent/intercom/config.json`:
+Create `$PI_CODING_AGENT_DIR/intercom/config.json` when running Pi with an isolated agent directory, otherwise create `~/.pi/agent/intercom/config.json`:
 
 ```json
 {
