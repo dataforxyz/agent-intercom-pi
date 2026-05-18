@@ -8,8 +8,10 @@ import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
+import { buildIntercomStatus, getForkHandlerIdentity, isForkHandlerSession } from "./fork-routing.ts";
 import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
+import { launchIntercomForkHandler, listIntercomForkHandlers } from "./fork-handler.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -381,6 +383,15 @@ function buildPresenceIdentity(pi: ExtensionAPI, sessionId: string): { name: str
     name: resolveIntercomPresenceName(pi.getSessionName(), sessionId),
   };
 }
+function applyForkHandlerSessionName(pi: ExtensionAPI): void {
+  const forkHandler = getForkHandlerIdentity();
+  if (!forkHandler) return;
+  try {
+    pi.setSessionName?.(forkHandler.sessionName);
+  } catch {
+    // Best effort only; presence status still advertises fork-handler identity.
+  }
+}
 function formatSessionLabel(session: SessionInfo, duplicates: Set<string>): string {
   if (!session.name) {
     return session.id;
@@ -410,6 +421,7 @@ function firstTextContent(result: { content?: Array<{ type: string; text?: strin
   return result.content?.find((item) => item.type === "text" && typeof item.text === "string")?.text?.replace(/\*\*/g, "") ?? "";
 }
 export default function piIntercomExtension(pi: ExtensionAPI) {
+  applyForkHandlerSessionName(pi);
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   let runtimeContext: ExtensionContext | null = null;
@@ -530,7 +542,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function currentStatus(): string {
     const activeToolName = activeTools.values().next().value;
     const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : agentRunning ? "thinking" : "idle";
-    return config.status ? `${lifecycleStatus} · ${config.status}` : lifecycleStatus;
+    return buildIntercomStatus(lifecycleStatus, config.status);
   }
   function buildRegistration(): Omit<SessionInfo, "id"> {
     const liveContext = getLiveContext();
@@ -636,6 +648,26 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pendingIdleMessages.push(entry);
     scheduleInboundFlush();
   }
+  async function maybeLaunchInboundForkHandler(ctx: ExtensionContext, entry: InboundMessageEntry, parentIsBusy: boolean): Promise<boolean> {
+    if (process.env.PI_INTERCOM_FORK_HANDLER === "1") return false;
+    if (!config.inboundForkHandlers.enabled) return false;
+    if (config.inboundForkHandlers.when === "busy" && !parentIsBusy) return false;
+    try {
+      const launched = await launchIntercomForkHandler(pi, ctx, entry, config.inboundForkHandlers);
+      if (launched) {
+        pi.appendEntry("intercom_fork_handler_started", {
+          messageId: entry.message.id,
+          from: entry.from.name || entry.from.id,
+          expectsReply: entry.message.expectsReply === true,
+          timestamp: Date.now(),
+        });
+      }
+      return launched;
+    } catch (error) {
+      console.error("[pi-intercom] Failed to route inbound message to fork handler:", error);
+      return false;
+    }
+  }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
@@ -661,12 +693,21 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       : undefined;
     replyTracker.recordIncomingMessage(from, message);
     const entry = { from, message, replyCommand, bodyText };
+    const fromForkHandler = isForkHandlerSession(from);
     void (async () => {
       const activeContext = getLiveContext(liveContext, messageGeneration);
       if (!activeContext) {
         return;
       }
-      if (!activeContext.isIdle()) {
+      const parentIsBusy = !activeContext.isIdle();
+      if (parentIsBusy) {
+        if (fromForkHandler) {
+          sendIncomingMessage(entry, "trigger", messageGeneration);
+          return;
+        }
+        if (await maybeLaunchInboundForkHandler(activeContext, entry, true)) {
+          return;
+        }
         if (!activeContext.hasUI) {
           const activeClient = client;
           if (!message.replyTo && activeClient?.isConnected()) {
@@ -688,6 +729,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (getLiveContext(liveContext, messageGeneration)) {
+        if (!fromForkHandler && await maybeLaunchInboundForkHandler(activeContext, entry, false)) {
+          return;
+        }
         sendIncomingMessage(entry, "trigger", messageGeneration);
       }
     })();
@@ -796,9 +840,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     return byName[0]?.id ?? null;
   }
-  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): void {
+  async function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): Promise<void> {
     const now = Date.now();
-    sendIncomingMessage({
+    const entry: InboundMessageEntry = {
       from: {
         id: sender,
         name: sender,
@@ -815,7 +859,20 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         content: { text: messageText },
       },
       bodyText: messageText,
-    }, "trigger");
+    };
+    const ctx = getLiveContext();
+    if (ctx) {
+      let parentIsBusy = true;
+      try {
+        parentIsBusy = !ctx.isIdle();
+      } catch {
+        parentIsBusy = true;
+      }
+      if (await maybeLaunchInboundForkHandler(ctx, entry, parentIsBusy)) {
+        return;
+      }
+    }
+    sendIncomingMessage(entry, "followUp");
   }
   function recordSubagentDeliveryError(entryType: string, to: string, message: string, error: unknown): void {
     pi.appendEntry(entryType, {
@@ -849,7 +906,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to)) {
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        await deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }
@@ -870,7 +927,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        await deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }
@@ -908,6 +965,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   });
   pi.on("session_start", (_event, ctx) => {
+    applyForkHandlerSessionName(pi);
     if (!config.enabled) {
       return;
     }
@@ -1317,6 +1375,11 @@ Usage:
   intercom({ action: "status" })                  → Show connection status`,
     promptSnippet:
       "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+    promptGuidelines: [
+      "intercom({action:'send'}) is non-blocking and returns immediately; intercom({action:'ask'}) blocks the current turn for up to 10 minutes waiting for a reply.",
+      "Only use action:'ask' when you actually need a human/sibling decision before continuing. For polling external state (file appears, process exits, port opens, URL becomes ready), use return_on instead so the turn can end and resume on the signal.",
+      "If you only need to notify a sibling and then keep working, use action:'send' and (if needed) register a return_on watcher on whatever artifact the sibling produces.",
+    ],
 
     parameters: Type.Object({
       action: Type.String({
@@ -1769,6 +1832,19 @@ Usage:
   pi.registerCommand("intercom", {
     description: "Open session intercom overlay",
     handler: async (_args, ctx) => openIntercomOverlay(ctx),
+  });
+
+  pi.registerCommand("intercom-handlers", {
+    description: "List inbound intercom fork handlers: /intercom-handlers [running|complete|failed|all]",
+    handler: async (args, ctx) => {
+      const arg = args.trim();
+      const status: "running" | "complete" | "failed" | "all" = arg === "running" || arg === "complete" || arg === "failed" ? arg : "all";
+      const runs = await listIntercomForkHandlers(status);
+      const lines = runs.length === 0
+        ? ["No intercom fork handlers."]
+        : runs.map((run) => `- ${run.id} · ${run.status} · from ${run.from} · message ${run.messageId} · ${run.dir}`);
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
   });
 
   pi.registerShortcut("alt+m", {

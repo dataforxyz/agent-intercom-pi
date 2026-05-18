@@ -2,6 +2,23 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
+export interface InboundForkHandlersConfig {
+  /** Route inbound intercom messages to background fork handlers (default: true) */
+  enabled: boolean;
+
+  /** When to fork: only while parent is busy, or for all inbound messages */
+  when: "busy" | "always";
+
+  /** Parent notification policy for launched handlers */
+  notify: "ack-and-summary" | "summary" | "none";
+
+  /** Optional Pi executable override for handler launch */
+  piCommand?: string;
+
+  /** Trigger a parent turn when the handler summary arrives (default: false) */
+  triggerParentOnSummary: boolean;
+}
+
 export interface IntercomConfig {
   /** Broker command used to spawn the broker process (e.g. "npx" or "bun") */
   brokerCommand: string;
@@ -20,6 +37,9 @@ export interface IntercomConfig {
   
   /** Show reply hint in incoming messages (default: true) */
   replyHint: boolean;
+
+  /** Optional inbound background fork-handler routing */
+  inboundForkHandlers: InboundForkHandlersConfig;
 }
 
 const CONFIG_PATH = join(homedir(), ".pi/agent/intercom/config.json");
@@ -30,6 +50,12 @@ const defaults: IntercomConfig = {
   confirmSend: false,
   enabled: true,
   replyHint: true,
+  inboundForkHandlers: {
+    enabled: true,
+    when: "always",
+    notify: "ack-and-summary",
+    triggerParentOnSummary: false,
+  },
 };
 
 export function loadConfig(): IntercomConfig {
@@ -98,6 +124,35 @@ export function loadConfig(): IntercomConfig {
         throw new Error(`"status" must be a string`);
       }
       config.status = parsedConfig.status;
+    }
+
+    if (Object.hasOwn(parsedConfig, "inboundForkHandlers")) {
+      if (typeof parsedConfig.inboundForkHandlers !== "object" || parsedConfig.inboundForkHandlers === null || Array.isArray(parsedConfig.inboundForkHandlers)) {
+        throw new Error(`"inboundForkHandlers" must be an object`);
+      }
+      const forkConfig = parsedConfig.inboundForkHandlers as Record<string, unknown>;
+      config.inboundForkHandlers = { ...defaults.inboundForkHandlers };
+      if (Object.hasOwn(forkConfig, "enabled")) {
+        if (typeof forkConfig.enabled !== "boolean") throw new Error(`"inboundForkHandlers.enabled" must be a boolean`);
+        config.inboundForkHandlers.enabled = forkConfig.enabled;
+      }
+      if (Object.hasOwn(forkConfig, "when")) {
+        if (forkConfig.when !== "busy" && forkConfig.when !== "always") throw new Error(`"inboundForkHandlers.when" must be "busy" or "always"`);
+        config.inboundForkHandlers.when = forkConfig.when;
+      }
+      if (Object.hasOwn(forkConfig, "notify")) {
+        if (forkConfig.notify !== "ack-and-summary" && forkConfig.notify !== "summary" && forkConfig.notify !== "none") throw new Error(`"inboundForkHandlers.notify" must be "ack-and-summary", "summary", or "none"`);
+        config.inboundForkHandlers.notify = forkConfig.notify;
+      }
+      if (Object.hasOwn(forkConfig, "piCommand")) {
+        if (typeof forkConfig.piCommand !== "string") throw new Error(`"inboundForkHandlers.piCommand" must be a string`);
+        const piCommand = forkConfig.piCommand.trim();
+        if (piCommand) config.inboundForkHandlers.piCommand = piCommand;
+      }
+      if (Object.hasOwn(forkConfig, "triggerParentOnSummary")) {
+        if (typeof forkConfig.triggerParentOnSummary !== "boolean") throw new Error(`"inboundForkHandlers.triggerParentOnSummary" must be a boolean`);
+        config.inboundForkHandlers.triggerParentOnSummary = forkConfig.triggerParentOnSummary;
+      }
     }
 
     return config;

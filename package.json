@@ -8,13 +8,17 @@
     "index.ts",
     "types.ts",
     "config.ts",
+    "fork-handler.ts",
+    "fork-routing.ts",
+    "fork-runtime.ts",
+    "fork-runtime-fallback.ts",
     "reply-tracker.ts",
     "broker/**/*.ts",
     "ui/**/*.ts",
     "skills/**/*"
   ],
   "scripts": {
-    "test": "tsx --test broker/paths.test.ts broker/spawn.test.ts reply-tracker.test.ts intercom.integration.test.ts test/inline-message.test.ts"
+    "test": "tsx --test broker/paths.test.ts broker/spawn.test.ts fork-handler.test.ts fork-routing.test.ts reply-tracker.test.ts intercom.integration.test.ts test/inline-message.test.ts"
   },
   "keywords": [
     "pi-package"
@@ -29,10 +33,19 @@
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*"
+    "@mariozechner/pi-tui": "*",
+    "pi-forks": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "pi-forks": {
+      "optional": true
+    }
   },
   "dependencies": {
     "tsx": "^4.20.0",
     "typebox": "^1.1.24"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
   }
 }
