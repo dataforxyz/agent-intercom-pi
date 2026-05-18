@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -44,6 +45,8 @@ export interface IntercomForkHandlerRun {
   stdoutPath: string;
   stderrPath: string;
   sessionDir: string;
+  notify?: InboundForkNotify;
+  triggerParentOnSummary?: boolean;
   startedAt: number;
   endedAt?: number;
   exitCode?: number | null;
@@ -143,6 +146,22 @@ function buildEventPayload(entry: InboundForkMessageEntry, run: IntercomForkHand
   };
 }
 
+function parentNotificationModeLines(run: IntercomForkHandlerRun): string[] {
+  const notify = run.notify ?? "summary";
+  if (notify === "none") {
+    return [
+      "Parent notification mode: none",
+      "Your final response is stored in handler logs only and will not be automatically posted to the parent transcript/context.",
+    ];
+  }
+  return [
+    `Parent notification mode: ${notify}`,
+    `Your final response WILL be copied into the parent transcript/context${run.triggerParentOnSummary ? " and will trigger a parent turn" : ""}.`,
+    ...(notify === "ack-and-summary" ? ["The parent already received a launch ack; do not repeat startup details unless relevant."] : []),
+    "Keep the final response concise. If you already sent an intercom message to the parent, do not repeat its full content; just note that you escalated it.",
+  ];
+}
+
 export function buildIntercomForkHandlerPrompt(entry: InboundForkMessageEntry, run: IntercomForkHandlerRun, eventJson: string): string {
   const senderTarget = entry.from.name || entry.from.id;
   const replyGuidance = entry.message.expectsReply
@@ -165,6 +184,7 @@ export function buildIntercomForkHandlerPrompt(entry: InboundForkMessageEntry, r
     "- Escalate only for destructive actions, ambiguous user preference, external side effects, security/privacy/cost risk, conflict with parent work, or low confidence.",
     "- Use intercom.send for non-blocking notices. Use intercom.ask only for true blocking parent decisions.",
     "- Keep any parent escalation brief and include the handler id.",
+    ...parentNotificationModeLines(run).map((line) => `- ${line}`),
     "",
     ...replyGuidance,
     "",
@@ -188,6 +208,7 @@ export function buildIntercomForkHandlerSystemPrompt(run: IntercomForkHandlerRun
     "You have delegated authority to answer or act when safe and derivable.",
     "Escalate only for destructive actions, ambiguous user preference, external side effects, security/privacy/cost risk, conflict with parent work, or low confidence.",
     "For intercom asks, answer directly with intercom.send + replyTo when safe; otherwise escalate quickly.",
+    ...parentNotificationModeLines(run),
     `Handler id: ${run.id}`,
   ].join("\n");
 }
@@ -199,6 +220,22 @@ function buildHandlerArgs(run: IntercomForkHandlerRun): string[] {
     promptPath: run.promptPath,
     forkFile: run.forkSessionFile || run.parentSessionFile,
   });
+}
+
+function fileSizeBytes(filePath: string): number | null {
+  try {
+    return fs.statSync(filePath).size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function formatHandlerLogPath(label: "Output" | "Errors", filePath: string): string {
+  const size = fileSizeBytes(filePath);
+  if (size === null) return `${label}: unavailable (${filePath}, missing)`;
+  if (label === "Errors" && size === 0) return `${label}: none (${filePath}, 0 B)`;
+  return `${label}: ${filePath} (${size} B)`;
 }
 
 function formatAck(run: IntercomForkHandlerRun, entry: InboundForkMessageEntry): string {
@@ -218,8 +255,8 @@ function formatSummary(run: IntercomForkHandlerRun): string {
     `From: ${run.from}`,
     `Message: ${run.messageId}`,
     `Exit: ${run.exitCode ?? "signal " + (run.signal ?? "unknown")}`,
-    `Output: ${run.stdoutPath}`,
-    `Errors: ${run.stderrPath}`,
+    formatHandlerLogPath("Output", run.stdoutPath),
+    formatHandlerLogPath("Errors", run.stderrPath),
     "",
     truncateText(output, HANDLER_SUMMARY_LIMIT_BYTES),
   ].join("\n");
@@ -270,6 +307,8 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
     ...(getSessionFile(ctx) ? { parentSessionFile: getSessionFile(ctx) } : {}),
     ...(getSessionId(ctx) ? { parentSessionId: getSessionId(ctx) } : {}),
     ...(getParentSessionName(pi) ? { parentSessionName: getParentSessionName(pi) } : {}),
+    notify: config.notify,
+    triggerParentOnSummary: config.triggerParentOnSummary,
     startedAt: Date.now(),
   };
   const eventJson = JSON.stringify(buildEventPayload(entry, run, ctx, pi), null, 2);

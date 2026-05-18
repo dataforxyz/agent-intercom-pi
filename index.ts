@@ -12,6 +12,7 @@ import { buildIntercomStatus, getForkHandlerIdentity, isForkHandlerSession } fro
 import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { launchIntercomForkHandler, listIntercomForkHandlers } from "./fork-handler.ts";
+import { compactIntercomHandlerMessages } from "./context-compaction.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -442,6 +443,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const replyTracker = new ReplyTracker();
   const pendingIdleMessages: InboundMessageEntry[] = [];
   let inboundFlushTimer: NodeJS.Timeout | null = null;
+
+  pi.on("context", (event) => {
+    const messages = compactIntercomHandlerMessages(event.messages);
+    if (messages === event.messages) return undefined;
+    return { messages };
+  });
   let replyWaiter: {
     from: string;
     replyTo: string;

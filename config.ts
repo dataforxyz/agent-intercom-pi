@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { homedir } from "os";
 
 export interface InboundForkHandlersConfig {
@@ -42,7 +42,12 @@ export interface IntercomConfig {
   inboundForkHandlers: InboundForkHandlersConfig;
 }
 
-const CONFIG_PATH = join(homedir(), ".pi/agent/intercom/config.json");
+export function getConfigPath(): string {
+  const agentDir = process.env.PI_CODING_AGENT_DIR
+    ? resolve(process.env.PI_CODING_AGENT_DIR)
+    : join(homedir(), ".pi", "agent");
+  return join(agentDir, "intercom", "config.json");
+}
 
 const defaults: IntercomConfig = {
   brokerCommand: "npx",
@@ -53,18 +58,19 @@ const defaults: IntercomConfig = {
   inboundForkHandlers: {
     enabled: true,
     when: "always",
-    notify: "ack-and-summary",
+    notify: "summary",
     triggerParentOnSummary: false,
   },
 };
 
 export function loadConfig(): IntercomConfig {
-  if (!existsSync(CONFIG_PATH)) {
+  const configPath = getConfigPath();
+  if (!existsSync(configPath)) {
     return { ...defaults };
   }
   
   try {
-    const raw = readFileSync(CONFIG_PATH, "utf-8");
+    const raw = readFileSync(configPath, "utf-8");
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error("Config must be a JSON object");
@@ -157,7 +163,7 @@ export function loadConfig(): IntercomConfig {
 
     return config;
   } catch (error) {
-    console.error(`Failed to load intercom config at ${CONFIG_PATH}:`, error);
+    console.error(`Failed to load intercom config at ${configPath}:`, error);
     return { ...defaults };
   }
 }

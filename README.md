@@ -359,7 +359,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ## Config
 
-Create `~/.pi/agent/intercom/config.json`:
+Create `$PI_CODING_AGENT_DIR/intercom/config.json` when running Pi with an isolated agent directory, otherwise create `~/.pi/agent/intercom/config.json`:
 
 ```json
 {
@@ -372,7 +372,7 @@ Create `~/.pi/agent/intercom/config.json`:
   "inboundForkHandlers": {
     "enabled": true,
     "when": "always",
-    "notify": "ack-and-summary",
+    "notify": "summary",
     "triggerParentOnSummary": false
   }
 }
@@ -388,11 +388,13 @@ Create `~/.pi/agent/intercom/config.json`:
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 | `inboundForkHandlers.enabled` | true | Route inbound messages to background sibling Pi handlers instead of interrupting/queuing in the parent; set false to opt out |
 | `inboundForkHandlers.when` | `"always"` | Fork all inbound messages by default; set `"busy"` to fork only while the parent is busy |
-| `inboundForkHandlers.notify` | `"ack-and-summary"` | Parent notification mode: `"ack-and-summary"`, `"summary"`, or `"none"` |
+| `inboundForkHandlers.notify` | `"summary"` | Parent notification mode: `"ack-and-summary"`, `"summary"`, or `"none"` |
 | `inboundForkHandlers.piCommand` | — | Optional Pi executable override for handler launch; `PI_INTERCOM_PI_BIN` also works |
 | `inboundForkHandlers.triggerParentOnSummary` | false | Trigger a parent turn when the handler summary arrives instead of display-only delivery |
 
 Inbound fork handlers are delegated triage sessions. They receive the inbound message capsule, may answer directly when safe and derivable, and should escalate only for destructive actions, ambiguous user preference, external side effects, security/privacy/cost risk, conflict with parent work, or low confidence. For `ask` messages, handlers are instructed to reply with `intercom.send` plus the original `replyTo` id when safe so the sender is unblocked without waking the parent. Handler sessions advertise a `fork-handler:<id>` status tag, and messages from those sessions bypass default fork routing so true parent escalations reach the parent instead of spawning another handler. Local subagent result/control relays also use this path when possible and otherwise fall back to display-only delivery rather than starting a parent turn.
+
+Routine-success handler receipts are compacted before model context is built so repeated inbound-message summaries do not bloat later turns. Compaction is conservative: the receipt must show success/exit 0, a usable `Output:` log path with byte size, an absent or empty `Errors:` line, and no inline blocker/action-required markers. Handler id, message id, sender, exit, Output/Errors pointers, byte sizes, and a few summary lines stay inline. Failed receipts, blocker/action-required receipts, non-empty stderr, missing/unavailable output logs, and already-compacted receipts are left unchanged.
 
 Use `/intercom-handlers [running|complete|failed|all]` to inspect persisted handler runs under `~/.local/state/pi-intercom/handlers/`.
 

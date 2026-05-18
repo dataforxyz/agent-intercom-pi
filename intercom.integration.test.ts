@@ -85,6 +85,17 @@ async function withChildOrchestratorEnv<T>(metadata: {
   }
 }
 
+async function withForkHandlerRoutingDisabled<T>(fn: () => T | Promise<T>): Promise<T> {
+  const previous = process.env.PI_INTERCOM_FORK_HANDLER;
+  process.env.PI_INTERCOM_FORK_HANDLER = "1";
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env.PI_INTERCOM_FORK_HANDLER;
+    else process.env.PI_INTERCOM_FORK_HANDLER = previous;
+  }
+}
+
 interface CapturedToolResult {
   content: Array<{ type: string; text: string }>;
   isError: boolean;
@@ -394,7 +405,7 @@ test("sessions publish automatic lifecycle status", { concurrency: false }, asyn
   }
 });
 
-test("busy interactive sessions idle-gate top-level asks without aborting", { concurrency: false }, async () => {
+test("busy interactive sessions idle-gate top-level asks without aborting", { concurrency: false }, async () => withForkHandlerRoutingDisabled(async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();
   let abortCount = 0;
@@ -434,7 +445,7 @@ test("busy interactive sessions idle-gate top-level asks without aborting", { co
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
   }
-});
+}));
 
 test("deferred startup connect is cancelled on shutdown", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
@@ -532,7 +543,7 @@ test("queued inbound messages are discarded after shutdown", { concurrency: fals
   }
 });
 
-test("busy non-interactive sessions auto-reply to top-level asks without aborting", { concurrency: false }, async () => {
+test("busy non-interactive sessions auto-reply to top-level asks without aborting", { concurrency: false }, async () => withForkHandlerRoutingDisabled(async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();
   let abortCount = 0;
@@ -566,7 +577,7 @@ test("busy non-interactive sessions auto-reply to top-level asks without abortin
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
   }
-});
+}));
 
 test("supervisor tool registers only when child metadata is present", async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
@@ -853,7 +864,7 @@ test("full ask/reply round-trip works with reply target resolved from current tu
   }
 });
 
-test("subagent control intercom events wake the current orchestrator session", async () => {
+test("subagent control intercom events fall back to display-only delivery for the current orchestrator session", async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const events = new EventEmitter();
   const sentMessages: Array<{ message: { customType?: string; content?: string }; options?: { triggerTurn?: boolean } }> = [];
@@ -888,10 +899,10 @@ test("subagent control intercom events wake the current orchestrator session", a
   assert.equal(sentMessages[0]?.message.customType, "intercom_message");
   assert.match(sentMessages[0]?.message.content ?? "", /From subagent-control/);
   assert.match(sentMessages[0]?.message.content ?? "", /worker needs attention in run 78f659a3/);
-  assert.equal(sentMessages[0]?.options?.triggerTurn, true);
+  assert.equal(sentMessages[0]?.options?.deliverAs, "followUp");
 });
 
-test("subagent result intercom events wake the current orchestrator session", async () => {
+test("subagent result intercom events fall back to display-only delivery for the current orchestrator session", async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const events = new EventEmitter();
   const sentMessages: Array<{ message: { customType?: string; content?: string }; options?: { triggerTurn?: boolean } }> = [];
@@ -929,7 +940,7 @@ test("subagent result intercom events wake the current orchestrator session", as
   assert.equal(sentMessages[0]?.message.customType, "intercom_message");
   assert.match(sentMessages[0]?.message.content ?? "", /From subagent-result/);
   assert.match(sentMessages[0]?.message.content ?? "", /Status: completed/);
-  assert.equal(sentMessages[0]?.options?.triggerTurn, true);
+  assert.equal(sentMessages[0]?.options?.deliverAs, "followUp");
   assert.deepEqual(deliveryAcks, [{ requestId: "result-1", delivered: true }]);
 });
 
