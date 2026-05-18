@@ -12,6 +12,11 @@ function isCompactedHandlerReceipt(content: string): boolean {
   return /\bhandler receipt \(compacted for /i.test(content.split(/\r?\n/, 1)[0] ?? "");
 }
 
+function hasUsableOutputLine(lines: string[]): boolean {
+  const outputLine = lines.find((line) => /^Output:/i.test(line));
+  return Boolean(outputLine && !/\b(unavailable|missing)\b/i.test(outputLine) && /\(\d+ B\)\s*$/i.test(outputLine));
+}
+
 function hasEmptyOrAbsentErrorsLine(lines: string[]): boolean {
   const errorsLine = lines.find((line) => /^Errors:/i.test(line));
   if (!errorsLine) return true;
@@ -25,7 +30,7 @@ function isRoutineSuccessfulHandlerReceipt(content: string): boolean {
   if (!/\b(complete|completed)\b/i.test(firstLine)) return false;
   if (/\b(failed|blocked|needs? attention|error)\b/i.test(firstLine)) return false;
   const exitLine = lines.find((line) => /^Exit:/i.test(line));
-  return (!exitLine || /^Exit:\s*0\b/i.test(exitLine)) && hasEmptyOrAbsentErrorsLine(lines);
+  return (!exitLine || /^Exit:\s*0\b/i.test(exitLine)) && hasUsableOutputLine(lines) && hasEmptyOrAbsentErrorsLine(lines);
 }
 
 function truncateReceiptLine(line: string, maxChars: number): string {

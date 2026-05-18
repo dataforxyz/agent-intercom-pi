@@ -34,6 +34,16 @@ test("compacts routine intercom handler receipts while preserving lookup pointer
   assert.ok(compacted.content.length < receipt.content.length);
 });
 
+test("does not compact intercom handler receipts without a usable output log pointer", () => {
+  const receipt = {
+    role: "custom",
+    customType: "intercom_fork_handler",
+    content: "intercom fork handler complete: incoming message\nHandler: icfh_123\nExit: 0\nOutput: unavailable (/tmp/out.log, missing)\nErrors: none (/tmp/err.log, 0 B)\n\nSummary should stay inline because output is missing.",
+  };
+
+  assert.deepEqual(compactIntercomHandlerMessages([receipt]), [receipt]);
+});
+
 test("does not compact intercom handler receipts with non-empty stderr", () => {
   const receipt = {
     role: "custom",
