@@ -53,6 +53,7 @@ export interface IntercomForkHandlerRun {
   signal?: NodeJS.Signals | null;
   summary?: string;
   error?: string;
+  finishSource?: "close" | "reconciled";
 }
 
 let handlerRuns: IntercomForkHandlerRun[] = [];
@@ -74,6 +75,16 @@ async function loadHandlers(): Promise<void> {
 async function saveHandlers(): Promise<void> {
   handlerRuns = handlerRuns.slice(-200);
   await writeJsonAtomic(HANDLERS_FILE, { runs: handlerRuns });
+}
+
+function isProcessAlive(pid: number | undefined): boolean {
+  if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 function shortId(value: string): string {
@@ -262,6 +273,44 @@ function formatSummary(run: IntercomForkHandlerRun): string {
   ].join("\n");
 }
 
+async function fillHandlerOutput(run: IntercomForkHandlerRun): Promise<{ stdout: string; stderr: string }> {
+  const stdout = await readOptionalText(run.stdoutPath);
+  const stderr = await readOptionalText(run.stderrPath);
+  run.summary = truncateText(stdout.trim() || stderr.trim(), HANDLER_SUMMARY_LIMIT_BYTES);
+  return { stdout, stderr };
+}
+
+export async function reconcileIntercomForkHandlers(pi?: Pick<ExtensionAPI, "appendEntry">): Promise<number> {
+  await loadHandlers();
+  let changed = 0;
+  for (const run of handlerRuns) {
+    if (run.status !== "starting" && run.status !== "running") continue;
+    if (run.status === "running" && isProcessAlive(run.pid)) continue;
+    const { stderr } = await fillHandlerOutput(run);
+    run.endedAt = run.endedAt ?? Date.now();
+    run.exitCode = run.exitCode ?? null;
+    run.signal = run.signal ?? null;
+    run.finishSource = "reconciled";
+    if (run.status === "starting") {
+      run.status = "failed";
+      run.error = run.error || stderr.trim() || "handler was still starting when reconciliation found no live pid";
+    } else if (stderr.trim()) {
+      run.status = "failed";
+      run.error = run.error || stderr.trim();
+    } else {
+      run.status = "complete";
+    }
+    changed += 1;
+    try {
+      pi?.appendEntry?.("intercom_fork_handler_reconciled", { id: run.id, status: run.status, pid: run.pid, endedAt: run.endedAt });
+    } catch {
+      // Best-effort audit trail.
+    }
+  }
+  if (changed > 0) await saveHandlers();
+  return changed;
+}
+
 async function markHandlerFinished(pi: ExtensionAPI, runId: string, code: number | null, signal: NodeJS.Signals | null, notify: InboundForkNotify, triggerParent: boolean): Promise<void> {
   await loadHandlers();
   const run = handlerRuns.find((candidate) => candidate.id === runId);
@@ -269,9 +318,8 @@ async function markHandlerFinished(pi: ExtensionAPI, runId: string, code: number
   run.endedAt = Date.now();
   run.exitCode = code;
   run.signal = signal;
-  const stdout = await readOptionalText(run.stdoutPath);
-  const stderr = await readOptionalText(run.stderrPath);
-  run.summary = truncateText(stdout.trim() || stderr.trim(), HANDLER_SUMMARY_LIMIT_BYTES);
+  run.finishSource = "close";
+  const { stderr } = await fillHandlerOutput(run);
   run.status = code === 0 ? "complete" : "failed";
   if (code !== 0) run.error = stderr.trim() || `handler exited with ${code ?? signal ?? "unknown status"}`;
   await saveHandlers();
@@ -294,6 +342,7 @@ async function markHandlerFinished(pi: ExtensionAPI, runId: string, code: number
 }
 
 export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: ExtensionContext, entry: InboundForkMessageEntry, config: InboundForkHandlersConfig): Promise<boolean> {
+  await reconcileIntercomForkHandlers(pi);
   await loadHandlers();
   const id = makeHandlerId(entry.message);
   const paths = buildForkRunPaths("intercom", id);
@@ -384,6 +433,7 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
 }
 
 export async function listIntercomForkHandlers(status: "running" | "complete" | "failed" | "all" = "all"): Promise<IntercomForkHandlerRun[]> {
+  await reconcileIntercomForkHandlers();
   await loadHandlers();
   return handlerRuns
     .filter((run) => status === "all" || run.status === status)
