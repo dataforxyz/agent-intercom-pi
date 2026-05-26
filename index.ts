@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
+import { spawnSync } from "child_process";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { IntercomClient } from "./broker/client.ts";
@@ -444,6 +445,46 @@ export function formatContactInstruction(contact: { target: string; id: string; 
   if (contact.name && contact.target !== contact.name) lines.push(`Session name: ${contact.name}${contact.duplicateName ? " (not used because it is duplicated)" : ""}`);
   if (contact.id !== contact.target) lines.push(`Session ID fallback: ${contact.id}`);
   return lines.join("\n");
+}
+
+interface ClipboardCopyResult {
+  ok: boolean;
+  method?: string;
+  error?: string;
+}
+
+function runClipboardCommand(command: string, args: string[], text: string): ClipboardCopyResult {
+  const result = spawnSync(command, args, {
+    input: text,
+    encoding: "utf8",
+    timeout: 2000,
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  if (result.error) return { ok: false, error: result.error.message };
+  if (result.status === 0) return { ok: true, method: command };
+  return { ok: false, error: result.stderr?.toString().trim() || `${command} exited ${result.status}` };
+}
+
+export function copyTextToClipboard(text: string): ClipboardCopyResult {
+  const candidates: Array<[string, string[]]> = [];
+  if (process.platform === "darwin") candidates.push(["pbcopy", []]);
+  else if (process.platform === "win32") candidates.push(["clip.exe", []]);
+  else {
+    if (process.env.WAYLAND_DISPLAY) candidates.push(["wl-copy", []]);
+    if (process.env.DISPLAY) {
+      candidates.push(["xclip", ["-selection", "clipboard"]]);
+      candidates.push(["xsel", ["--clipboard", "--input"]]);
+    }
+    candidates.push(["clip.exe", []]);
+  }
+
+  let lastError = "No clipboard command available";
+  for (const [command, args] of candidates) {
+    const result = runClipboardCommand(command, args, text);
+    if (result.ok) return result;
+    lastError = result.error ?? lastError;
+  }
+  return { ok: false, error: lastError };
 }
 export default function piIntercomExtension(pi: ExtensionAPI) {
   applyForkHandlerSessionName(pi);
@@ -1820,25 +1861,34 @@ Usage:
     ctx.ui.setEditorText(next);
   }
 
-  async function showIntercomId(ctx: ExtensionContext, mode: "show" | "insert" = "show"): Promise<void> {
+  async function showIntercomId(ctx: ExtensionContext, mode: "copy" | "insert" = "copy"): Promise<void> {
     const generation = runtimeGeneration;
     const liveContext = getLiveContext(ctx, generation);
     if (!liveContext) return;
     const contact = await resolveCurrentContact(liveContext, generation);
     if (!contact || !getLiveContext(liveContext, generation)) return;
     const instruction = formatContactInstruction(contact);
-    if (mode === "insert" && liveContext.hasUI) {
+    if (mode === "insert") {
+      if (!liveContext.hasUI) {
+        notifyIfLive(liveContext, `Intercom target: ${contact.target}`, "info", generation);
+        return;
+      }
       insertIntoEditor(liveContext, instruction);
-      notifyIfLive(liveContext, `Inserted intercom contact target: ${contact.target}`, "info", generation);
+      notifyIfLive(liveContext, `Inserted intercom contact target for another agent: ${contact.target}`, "info", generation);
       return;
     }
-    pi.sendMessage({
-      customType: "intercom_contact_id",
-      content: instruction,
-      display: true,
-      details: contact,
-    });
-    notifyIfLive(liveContext, `Intercom contact target: ${contact.target}`, "info", generation);
+
+    const copied = copyTextToClipboard(instruction);
+    if (copied.ok) {
+      notifyIfLive(liveContext, `Copied intercom contact target for another agent: ${contact.target}`, "info", generation);
+      return;
+    }
+    if (liveContext.hasUI) {
+      insertIntoEditor(liveContext, instruction);
+      notifyIfLive(liveContext, `Clipboard unavailable; inserted intercom contact target for another agent: ${contact.target}`, "warning", generation);
+      return;
+    }
+    notifyIfLive(liveContext, `Intercom target: ${contact.target}`, "info", generation);
   }
 
   async function openIntercomOverlay(ctx: ExtensionContext): Promise<void> {
@@ -1916,10 +1966,10 @@ Usage:
   });
 
   pi.registerCommand("intercom-id", {
-    description: "Show this session's intercom contact target. Use /intercom-id insert to put a handoff snippet in the editor.",
+    description: "Copy this session's intercom contact target for another agent. Use /intercom-id insert to put the handoff snippet in the editor.",
     handler: async (args, ctx) => {
       const mode = args.trim().toLowerCase();
-      await showIntercomId(ctx, mode === "insert" || mode === "editor" ? "insert" : "show");
+      await showIntercomId(ctx, mode === "insert" || mode === "editor" ? "insert" : "copy");
     },
   });
 
@@ -1942,7 +1992,7 @@ Usage:
   });
 
   pi.registerShortcut("alt+i", {
-    description: "Insert this session's intercom contact target",
+    description: "Insert this session's intercom contact target for another agent",
     handler: async (ctx) => showIntercomId(ctx, "insert"),
   });
 }
