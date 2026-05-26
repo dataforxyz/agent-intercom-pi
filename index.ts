@@ -1992,7 +1992,7 @@ Usage:
   });
 
   pi.registerShortcut("alt+i", {
-    description: "Insert this session's intercom contact target for another agent",
-    handler: async (ctx) => showIntercomId(ctx, "insert"),
+    description: "Copy this session's intercom contact target for another agent, falling back to editor insert",
+    handler: async (ctx) => showIntercomId(ctx, "copy"),
   });
 }
