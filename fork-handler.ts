@@ -10,6 +10,7 @@ const HANDLER_MESSAGE_TYPE = "intercom_fork_handler";
 const HANDLERS_FILE = getForkHandlersFile("intercom");
 const HANDLER_SUMMARY_LIMIT_BYTES = 24 * 1024;
 const SUBAGENT_RESULT_INLINE_LIMIT_BYTES = 8 * 1024;
+const PARENT_SESSION_SNAPSHOT_FILE = "parent-session-snapshot.jsonl";
 const INTERCOM_PARENT_SESSION_FILE_ENV = "PI_INTERCOM_PARENT_SESSION_FILE";
 const INTERCOM_PARENT_SESSION_ID_ENV = "PI_INTERCOM_PARENT_SESSION_ID";
 const INTERCOM_PARENT_SESSION_NAME_ENV = "PI_INTERCOM_PARENT_SESSION_NAME";
@@ -44,6 +45,9 @@ export interface IntercomForkHandlerRun {
   cwd: string;
   parentSessionFile?: string;
   forkSessionFile?: string;
+  parentSessionSnapshotBytes?: number;
+  parentSessionSnapshotDeletedAt?: number;
+  parentSessionSnapshotCleanupError?: string;
   inboundBodyPath?: string;
   inboundBodyBytes?: number;
   inboundBodyCompacted?: boolean;
@@ -311,6 +315,45 @@ function fileSizeBytes(filePath: string): number | null {
   }
 }
 
+function parentSessionSnapshotPath(run: Pick<IntercomForkHandlerRun, "dir">): string {
+  return path.join(run.dir, PARENT_SESSION_SNAPSHOT_FILE);
+}
+
+function isOwnedParentSessionSnapshot(run: Pick<IntercomForkHandlerRun, "dir" | "forkSessionFile">): boolean {
+  if (!run.forkSessionFile) return false;
+  return path.resolve(run.forkSessionFile) === path.resolve(parentSessionSnapshotPath(run));
+}
+
+export async function cleanupParentSessionSnapshot(run: IntercomForkHandlerRun): Promise<boolean> {
+  if (!isOwnedParentSessionSnapshot(run)) return false;
+  const snapshotPath = run.forkSessionFile!;
+  try {
+    await fsp.unlink(snapshotPath);
+    run.parentSessionSnapshotDeletedAt = Date.now();
+    delete run.parentSessionSnapshotCleanupError;
+    delete run.forkSessionFile;
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      run.parentSessionSnapshotDeletedAt = Date.now();
+      delete run.parentSessionSnapshotCleanupError;
+      delete run.forkSessionFile;
+      return true;
+    }
+    run.parentSessionSnapshotCleanupError = error instanceof Error ? error.message : String(error);
+    return false;
+  }
+}
+
+async function cleanupStoredCompletedSnapshots(): Promise<boolean> {
+  let changed = false;
+  for (const run of handlerRuns) {
+    if (run.status === "starting" || run.status === "running") continue;
+    changed = await cleanupParentSessionSnapshot(run) || changed;
+  }
+  return changed;
+}
+
 function formatHandlerLogPath(label: "Output" | "Errors", filePath: string): string {
   const size = fileSizeBytes(filePath);
   if (size === null) return `${label}: unavailable (${filePath}, missing)`;
@@ -369,6 +412,7 @@ export async function reconcileIntercomForkHandlers(pi?: Pick<ExtensionAPI, "app
     } else {
       run.status = "complete";
     }
+    await cleanupParentSessionSnapshot(run);
     changed += 1;
     try {
       pi?.appendEntry?.("intercom_fork_handler_reconciled", { id: run.id, status: run.status, pid: run.pid, endedAt: run.endedAt });
@@ -376,6 +420,7 @@ export async function reconcileIntercomForkHandlers(pi?: Pick<ExtensionAPI, "app
       // Best-effort audit trail.
     }
   }
+  if (await cleanupStoredCompletedSnapshots()) changed += 1;
   if (changed > 0) await saveHandlers();
   return changed;
 }
@@ -391,6 +436,7 @@ async function markHandlerFinished(pi: ExtensionAPI, runId: string, code: number
   const { stderr } = await fillHandlerOutput(run);
   run.status = code === 0 ? "complete" : "failed";
   if (code !== 0) run.error = stderr.trim() || `handler exited with ${code ?? signal ?? "unknown status"}`;
+  await cleanupParentSessionSnapshot(run);
   await saveHandlers();
   try {
     pi.appendEntry?.("intercom_fork_handler_finished", { id: run.id, status: run.status, messageId: run.messageId, exitCode: code, signal, endedAt: run.endedAt });
@@ -445,10 +491,12 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
   }
   const eventJson = JSON.stringify(buildIntercomForkEventPayload(entry, run, ctx, pi), null, 2);
   if (run.parentSessionFile) {
-    const snapshotPath = `${run.dir}/parent-session-snapshot.jsonl`;
+    const snapshotPath = parentSessionSnapshotPath(run);
     try {
       await fsp.copyFile(run.parentSessionFile, snapshotPath);
       run.forkSessionFile = snapshotPath;
+      const snapshotBytes = fileSizeBytes(snapshotPath);
+      if (snapshotBytes !== null) run.parentSessionSnapshotBytes = snapshotBytes;
     } catch {
       // Best effort. If snapshotting fails, fall back to the original session file.
     }
@@ -486,6 +534,7 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
       failed.status = "failed";
       failed.endedAt = Date.now();
       failed.error = launch.error instanceof Error ? launch.error.message : String(launch.error);
+      await cleanupParentSessionSnapshot(failed);
       if (!handlerRuns.some((candidate) => candidate.id === run.id)) handlerRuns.push(failed);
       await saveHandlers();
       console.error("[pi-intercom] Failed to launch fork handler", launch.error);
@@ -511,6 +560,7 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
     run.status = "failed";
     run.endedAt = Date.now();
     run.error = error instanceof Error ? error.message : String(error);
+    await cleanupParentSessionSnapshot(run);
     await saveHandlers();
     console.error("[pi-intercom] Failed to launch fork handler", error);
     return false;

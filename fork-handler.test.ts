@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildIntercomForkEventPayload, buildIntercomForkHandlerPrompt, buildIntercomForkHandlerSystemPrompt, resolveTriggerParentOnSummary, shouldAutoTriggerParent, type IntercomForkHandlerRun, type InboundForkMessageEntry } from "./fork-handler.ts";
+import * as fsp from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { buildIntercomForkEventPayload, buildIntercomForkHandlerPrompt, buildIntercomForkHandlerSystemPrompt, cleanupParentSessionSnapshot, resolveTriggerParentOnSummary, shouldAutoTriggerParent, type IntercomForkHandlerRun, type InboundForkMessageEntry } from "./fork-handler.ts";
 
 function makeRun(): IntercomForkHandlerRun {
   return {
@@ -94,6 +97,20 @@ test("auto parent trigger wakes for subagent results but not routine progress", 
   const run = { ...makeRun(), triggerParentOnSummary: "auto" as const, autoTriggerParentOnSummary: true };
   assert.equal(resolveTriggerParentOnSummary(run), true);
   assert.equal(resolveTriggerParentOnSummary({ ...run, summary: "Handled; Parent trigger: false" }), false);
+});
+
+test("completed handlers delete their owned parent snapshot copy", async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-intercom-snapshot-test-"));
+  try {
+    const run = { ...makeRun(), dir, forkSessionFile: path.join(dir, "parent-session-snapshot.jsonl") };
+    await fsp.writeFile(run.forkSessionFile, "parent transcript", "utf8");
+    assert.equal(await cleanupParentSessionSnapshot(run), true);
+    assert.equal(run.forkSessionFile, undefined);
+    assert.equal(typeof run.parentSessionSnapshotDeletedAt, "number");
+    await assert.rejects(fsp.stat(path.join(dir, "parent-session-snapshot.jsonl")), /ENOENT/);
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("system prompt constrains fork handler to the intercom event capsule", () => {
