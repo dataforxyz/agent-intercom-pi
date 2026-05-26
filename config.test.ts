@@ -28,11 +28,12 @@ test("loadConfig reads intercom config from PI_CODING_AGENT_DIR", () => {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const configPath = join(agentDir, "intercom", "config.json");
   mkdirSync(join(agentDir, "intercom"), { recursive: true });
-  writeFileSync(configPath, JSON.stringify({ enabled: false, inboundForkHandlers: { notify: "none" } }));
+  writeFileSync(configPath, JSON.stringify({ enabled: false, inboundForkHandlers: { notify: "none", triggerParentOnSummary: "auto" } }));
   try {
     const config = loadConfig();
     assert.equal(config.enabled, false);
     assert.equal(config.inboundForkHandlers.notify, "none");
+    assert.equal(config.inboundForkHandlers.triggerParentOnSummary, "auto");
   } finally {
     restoreEnv();
     rmSync(agentDir, { recursive: true, force: true });

@@ -15,8 +15,8 @@ export interface InboundForkHandlersConfig {
   /** Optional Pi executable override for handler launch */
   piCommand?: string;
 
-  /** Trigger a parent turn when the handler summary arrives (default: false) */
-  triggerParentOnSummary: boolean;
+  /** Trigger a parent turn when the handler summary arrives (default: auto) */
+  triggerParentOnSummary: boolean | "auto";
 }
 
 export interface IntercomConfig {
@@ -59,7 +59,7 @@ const defaults: IntercomConfig = {
     enabled: true,
     when: "always",
     notify: "summary",
-    triggerParentOnSummary: false,
+    triggerParentOnSummary: "auto",
   },
 };
 
@@ -156,8 +156,11 @@ export function loadConfig(): IntercomConfig {
         if (piCommand) config.inboundForkHandlers.piCommand = piCommand;
       }
       if (Object.hasOwn(forkConfig, "triggerParentOnSummary")) {
-        if (typeof forkConfig.triggerParentOnSummary !== "boolean") throw new Error(`"inboundForkHandlers.triggerParentOnSummary" must be a boolean`);
-        config.inboundForkHandlers.triggerParentOnSummary = forkConfig.triggerParentOnSummary;
+        const triggerParentOnSummary = forkConfig.triggerParentOnSummary;
+        if (typeof triggerParentOnSummary !== "boolean" && triggerParentOnSummary !== "auto") {
+          throw new Error(`"inboundForkHandlers.triggerParentOnSummary" must be a boolean or "auto"`);
+        }
+        config.inboundForkHandlers.triggerParentOnSummary = triggerParentOnSummary;
       }
     }
 

@@ -17,13 +17,14 @@ const INTERCOM_PARENT_INTERCOM_TARGET_ENV = "PI_INTERCOM_PARENT_INTERCOM_TARGET"
 
 export type InboundForkWhen = "busy" | "always";
 export type InboundForkNotify = "ack-and-summary" | "summary" | "none";
+export type InboundForkTriggerParent = boolean | "auto";
 
 export interface InboundForkHandlersConfig {
   enabled: boolean;
   when: InboundForkWhen;
   notify: InboundForkNotify;
   piCommand?: string;
-  triggerParentOnSummary: boolean;
+  triggerParentOnSummary: InboundForkTriggerParent;
 }
 
 export interface InboundForkMessageEntry {
@@ -56,7 +57,8 @@ export interface IntercomForkHandlerRun {
   stderrPath: string;
   sessionDir: string;
   notify?: InboundForkNotify;
-  triggerParentOnSummary?: boolean;
+  triggerParentOnSummary?: InboundForkTriggerParent;
+  autoTriggerParentOnSummary?: boolean;
   startedAt: number;
   endedAt?: number;
   exitCode?: number | null;
@@ -144,6 +146,32 @@ function isSubagentResultEntry(entry: InboundForkMessageEntry): boolean {
   return entry.from.id === "subagent-result" || entry.from.name === "subagent-result";
 }
 
+const PARENT_TRIGGER_FALSE_PATTERN = /(?:pi-intercom:\s*)?(?:trigger[-_ ]?parent|parent[-_ ]?trigger|triggerParentOnSummary)\s*[:=]\s*(?:false|no|off|0)\b/i;
+const PARENT_TRIGGER_TRUE_PATTERN = /(?:pi-intercom:\s*)?(?:trigger[-_ ]?parent|parent[-_ ]?trigger|triggerParentOnSummary)\s*[:=]\s*(?:true|yes|on|1)\b/i;
+
+function explicitParentTrigger(text: string): boolean | undefined {
+  if (PARENT_TRIGGER_FALSE_PATTERN.test(text)) return false;
+  if (PARENT_TRIGGER_TRUE_PATTERN.test(text)) return true;
+  return undefined;
+}
+
+export function shouldAutoTriggerParent(entry: InboundForkMessageEntry): boolean {
+  const explicit = explicitParentTrigger(entry.bodyText);
+  if (explicit !== undefined) return explicit;
+  if (entry.message.expectsReply === true) return true;
+  if (isSubagentResultEntry(entry)) return true;
+  if (/\b(?:needs? (?:attention|decision|help)|blocked|review[- ]?complete|status:\s*completed)\b/i.test(entry.bodyText)) return true;
+  return false;
+}
+
+export function resolveTriggerParentOnSummary(run: IntercomForkHandlerRun): boolean {
+  if (run.triggerParentOnSummary === true) return true;
+  if (run.triggerParentOnSummary === false) return false;
+  const explicit = explicitParentTrigger(run.summary ?? "");
+  if (explicit !== undefined) return explicit;
+  return run.autoTriggerParentOnSummary === true;
+}
+
 function compactBodyForFork(entry: InboundForkMessageEntry, run: IntercomForkHandlerRun): string {
   if (!run.inboundBodyCompacted || !run.inboundBodyPath) return entry.bodyText;
   return [
@@ -204,7 +232,10 @@ function parentNotificationModeLines(run: IntercomForkHandlerRun): string[] {
   }
   return [
     `Parent notification mode: ${notify}`,
-    `Your final response WILL be copied into the parent transcript/context${run.triggerParentOnSummary ? " and will trigger a parent turn" : ""}.`,
+    run.triggerParentOnSummary === "auto"
+      ? `Your final response WILL be copied into the parent transcript/context and may trigger a parent turn for asks, completed subagent results, or actionable updates.`
+      : `Your final response WILL be copied into the parent transcript/context${run.triggerParentOnSummary ? " and will trigger a parent turn" : ""}.`,
+    ...(run.triggerParentOnSummary === "auto" ? ["To opt out of a parent turn for a non-actionable summary, include exactly: Parent trigger: false"] : []),
     ...(notify === "ack-and-summary" ? ["The parent already received a launch ack; do not repeat startup details unless relevant."] : []),
     "Keep the final response concise. If you already sent an intercom message to the parent, do not repeat its full content; just note that you escalated it.",
   ];
@@ -349,7 +380,7 @@ export async function reconcileIntercomForkHandlers(pi?: Pick<ExtensionAPI, "app
   return changed;
 }
 
-async function markHandlerFinished(pi: ExtensionAPI, runId: string, code: number | null, signal: NodeJS.Signals | null, notify: InboundForkNotify, triggerParent: boolean): Promise<void> {
+async function markHandlerFinished(pi: ExtensionAPI, runId: string, code: number | null, signal: NodeJS.Signals | null, notify: InboundForkNotify, triggerParent: InboundForkTriggerParent): Promise<void> {
   await loadHandlers();
   const run = handlerRuns.find((candidate) => candidate.id === runId);
   if (!run) return;
@@ -374,7 +405,7 @@ async function markHandlerFinished(pi: ExtensionAPI, runId: string, code: number
         display: true,
         details: { id: run.id, messageId: run.messageId, status: run.status, exitCode: code, signal },
       },
-      { triggerTurn: triggerParent },
+      { triggerTurn: triggerParent === true || resolveTriggerParentOnSummary(run) },
     );
   }
 }
@@ -401,6 +432,7 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
     ...(parentIntercomTarget ? { parentIntercomTarget } : {}),
     notify: config.notify,
     triggerParentOnSummary: config.triggerParentOnSummary,
+    autoTriggerParentOnSummary: shouldAutoTriggerParent(entry),
     startedAt: Date.now(),
   };
   await fsp.mkdir(run.sessionDir, { recursive: true });

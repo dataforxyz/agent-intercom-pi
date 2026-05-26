@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildIntercomForkEventPayload, buildIntercomForkHandlerPrompt, buildIntercomForkHandlerSystemPrompt, type IntercomForkHandlerRun, type InboundForkMessageEntry } from "./fork-handler.ts";
+import { buildIntercomForkEventPayload, buildIntercomForkHandlerPrompt, buildIntercomForkHandlerSystemPrompt, resolveTriggerParentOnSummary, shouldAutoTriggerParent, type IntercomForkHandlerRun, type InboundForkMessageEntry } from "./fork-handler.ts";
 
 function makeRun(): IntercomForkHandlerRun {
   return {
@@ -76,6 +76,24 @@ test("large subagent-result payloads are compacted for fork handler prompts", ()
   assert.ok(payload.payload.bodyText.length < entry.bodyText.length);
   const prompt = buildIntercomForkHandlerPrompt(entry, run, JSON.stringify(payload, null, 2));
   assert.match(prompt, /Full inbound message path:/);
+});
+
+test("auto parent trigger wakes for subagent results but not routine progress", () => {
+  const progress = makeEntry(false);
+  progress.bodyText = "Subagent progress update. Reviewing PR now.";
+  progress.message.content.text = progress.bodyText;
+  assert.equal(shouldAutoTriggerParent(progress), false);
+
+  const result = makeEntry(false);
+  result.from.id = "subagent-result";
+  result.from.name = "subagent-result";
+  result.bodyText = "subagent results\n\nStatus: completed";
+  result.message.content.text = result.bodyText;
+  assert.equal(shouldAutoTriggerParent(result), true);
+
+  const run = { ...makeRun(), triggerParentOnSummary: "auto" as const, autoTriggerParentOnSummary: true };
+  assert.equal(resolveTriggerParentOnSummary(run), true);
+  assert.equal(resolveTriggerParentOnSummary({ ...run, summary: "Handled; Parent trigger: false" }), false);
 });
 
 test("system prompt constrains fork handler to the intercom event capsule", () => {
