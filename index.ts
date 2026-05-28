@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { IntercomClient } from "./broker/client.ts";
@@ -453,15 +453,35 @@ interface ClipboardCopyResult {
   error?: string;
 }
 
+function runDetachedClipboardCommand(command: string, args: string[], text: string): ClipboardCopyResult {
+  const found = spawnSync("which", [command], { stdio: "ignore", timeout: 1000 });
+  if (found.status !== 0) return { ok: false, error: `${command} not found` };
+
+  try {
+    const proc = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
+    proc.stdin.on("error", () => {
+      // Ignore EPIPE if the clipboard helper exits early.
+    });
+    proc.stdin.write(text);
+    proc.stdin.end();
+    proc.unref();
+    return { ok: true, method: command };
+  } catch (error) {
+    return { ok: false, error: getErrorMessage(error) };
+  }
+}
+
 function runClipboardCommand(command: string, args: string[], text: string): ClipboardCopyResult {
+  if (command === "wl-copy") return runDetachedClipboardCommand(command, args, text);
+
   const result = spawnSync(command, args, {
     input: text,
     encoding: "utf8",
     timeout: 2000,
     stdio: ["pipe", "ignore", "pipe"],
   });
-  if (result.error) return { ok: false, error: result.error.message };
   if (result.status === 0) return { ok: true, method: command };
+  if (result.error) return { ok: false, error: result.error.message };
   return { ok: false, error: result.stderr?.toString().trim() || `${command} exited ${result.status}` };
 }
 
