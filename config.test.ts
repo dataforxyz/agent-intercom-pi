@@ -23,6 +23,18 @@ test("getConfigPath honors PI_CODING_AGENT_DIR", () => {
   }
 });
 
+test("loadConfig defaults inbound fork routing to auto", () => {
+  const agentDir = mkdtempSync(join(tmpdir(), "pi-intercom-agent-dir-"));
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    const config = loadConfig();
+    assert.equal(config.inboundForkHandlers.when, "auto");
+  } finally {
+    restoreEnv();
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig reads intercom config from PI_CODING_AGENT_DIR", () => {
   const agentDir = mkdtempSync(join(tmpdir(), "pi-intercom-agent-dir-"));
   process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -32,6 +44,7 @@ test("loadConfig reads intercom config from PI_CODING_AGENT_DIR", () => {
   try {
     const config = loadConfig();
     assert.equal(config.enabled, false);
+    assert.equal(config.inboundForkHandlers.when, "auto");
     assert.equal(config.inboundForkHandlers.notify, "none");
     assert.equal(config.inboundForkHandlers.triggerParentOnSummary, "auto");
   } finally {

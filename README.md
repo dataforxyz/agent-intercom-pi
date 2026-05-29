@@ -371,7 +371,7 @@ Create `$PI_CODING_AGENT_DIR/intercom/config.json` when running Pi with an isola
   "status": "researching",
   "inboundForkHandlers": {
     "enabled": true,
-    "when": "always",
+    "when": "auto",
     "notify": "summary",
     "triggerParentOnSummary": "auto"
   }
@@ -387,7 +387,7 @@ Create `$PI_CODING_AGENT_DIR/intercom/config.json` when running Pi with an isola
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 | `inboundForkHandlers.enabled` | true | Route inbound messages to background sibling Pi handlers instead of interrupting/queuing in the parent; set false to opt out |
-| `inboundForkHandlers.when` | `"always"` | Fork all inbound messages by default; set `"busy"` to fork only while the parent is busy |
+| `inboundForkHandlers.when` | `"auto"` | Wake the idle parent directly; fork when the parent is busy or has queued messages. Set `"busy"` to ignore queued-message heuristics, or `"always"` to fork all inbound messages |
 | `inboundForkHandlers.notify` | `"summary"` | Parent notification mode: `"ack-and-summary"`, `"summary"`, or `"none"` |
 | `inboundForkHandlers.piCommand` | — | Optional Pi executable override for handler launch; `PI_INTERCOM_PI_BIN` also works |
 | `inboundForkHandlers.triggerParentOnSummary` | `"auto"` | Trigger policy for handler summaries: `"auto"` wakes the parent for asks, completed subagent results, and actionable updates; `true` always wakes; `false` keeps summaries display-only |

@@ -150,6 +150,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
   abort?: () => void;
   hasUI?: boolean;
   isIdle?: () => boolean;
+  hasPendingMessages?: () => boolean;
   ui?: unknown;
 } = {}) {
   const events = new EventEmitter();
@@ -190,6 +191,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
     model: { id: "child-model" },
     sessionManager: { getSessionId: () => "session-child-test" },
     isIdle: options.isIdle ?? (() => true),
+    hasPendingMessages: options.hasPendingMessages ?? (() => false),
     hasUI: options.hasUI ?? false,
     abort: options.abort ?? (() => undefined),
     ui: options.ui,

@@ -740,10 +740,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pendingIdleMessages.push(entry);
     scheduleInboundFlush();
   }
-  async function maybeLaunchInboundForkHandler(ctx: ExtensionContext, entry: InboundMessageEntry, parentIsBusy: boolean): Promise<boolean> {
+  async function maybeLaunchInboundForkHandler(ctx: ExtensionContext, entry: InboundMessageEntry, parentIsBusy: boolean, parentHasPendingMessages = false): Promise<boolean> {
     if (process.env.PI_INTERCOM_FORK_HANDLER === "1") return false;
     if (!config.inboundForkHandlers.enabled) return false;
     if (config.inboundForkHandlers.when === "busy" && !parentIsBusy) return false;
+    if (config.inboundForkHandlers.when === "auto" && !parentIsBusy && !parentHasPendingMessages) return false;
     try {
       const launched = await launchIntercomForkHandler(pi, ctx, entry, config.inboundForkHandlers);
       if (launched) {
@@ -792,12 +793,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       const parentIsBusy = !activeContext.isIdle();
+      const parentHasPendingMessages = typeof activeContext.hasPendingMessages === "function" && activeContext.hasPendingMessages();
       if (parentIsBusy) {
         if (fromForkHandler) {
           sendIncomingMessage(entry, "trigger", messageGeneration);
           return;
         }
-        if (await maybeLaunchInboundForkHandler(activeContext, entry, true)) {
+        if (await maybeLaunchInboundForkHandler(activeContext, entry, true, parentHasPendingMessages)) {
           return;
         }
         if (!activeContext.hasUI) {
@@ -821,7 +823,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (getLiveContext(liveContext, messageGeneration)) {
-        if (!fromForkHandler && await maybeLaunchInboundForkHandler(activeContext, entry, false)) {
+        if (!fromForkHandler && await maybeLaunchInboundForkHandler(activeContext, entry, false, parentHasPendingMessages)) {
           return;
         }
         sendIncomingMessage(entry, "trigger", messageGeneration);

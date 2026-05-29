@@ -6,8 +6,8 @@ export interface InboundForkHandlersConfig {
   /** Route inbound intercom messages to background fork handlers (default: true) */
   enabled: boolean;
 
-  /** When to fork: only while parent is busy, or for all inbound messages */
-  when: "busy" | "always";
+  /** When to fork: automatically while parent is busy/queued, only while busy, or for all inbound messages */
+  when: "auto" | "busy" | "always";
 
   /** Parent notification policy for launched handlers */
   notify: "ack-and-summary" | "summary" | "none";
@@ -57,7 +57,7 @@ const defaults: IntercomConfig = {
   replyHint: true,
   inboundForkHandlers: {
     enabled: true,
-    when: "always",
+    when: "auto",
     notify: "summary",
     triggerParentOnSummary: "auto",
   },
@@ -143,7 +143,7 @@ export function loadConfig(): IntercomConfig {
         config.inboundForkHandlers.enabled = forkConfig.enabled;
       }
       if (Object.hasOwn(forkConfig, "when")) {
-        if (forkConfig.when !== "busy" && forkConfig.when !== "always") throw new Error(`"inboundForkHandlers.when" must be "busy" or "always"`);
+        if (forkConfig.when !== "auto" && forkConfig.when !== "busy" && forkConfig.when !== "always") throw new Error(`"inboundForkHandlers.when" must be "auto", "busy", or "always"`);
         config.inboundForkHandlers.when = forkConfig.when;
       }
       if (Object.hasOwn(forkConfig, "notify")) {
