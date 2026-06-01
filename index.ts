@@ -682,8 +682,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
       return;
     }
+    const context = replyTracker.recordIncomingMessage(entry.from, entry.message, Date.now());
     if (delivery !== "followUp") {
-      replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
+      replyTracker.queueTurnContext(context);
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
@@ -784,7 +785,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const replyCommand = config.replyHint && message.expectsReply
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
-    replyTracker.recordIncomingMessage(from, message);
     const entry = { from, message, replyCommand, bodyText };
     const fromForkHandler = isForkHandlerSession(from);
     void (async () => {

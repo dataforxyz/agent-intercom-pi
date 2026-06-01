@@ -15,7 +15,7 @@ export interface InboundForkHandlersConfig {
   /** Optional Pi executable override for handler launch */
   piCommand?: string;
 
-  /** Trigger a parent turn when the handler summary arrives (default: auto) */
+  /** Trigger a parent turn when the handler summary arrives (default: auto; ignored when notify is "none") */
   triggerParentOnSummary: boolean | "auto";
 }
 
@@ -58,7 +58,7 @@ const defaults: IntercomConfig = {
   inboundForkHandlers: {
     enabled: true,
     when: "auto",
-    notify: "summary",
+    notify: "none",
     triggerParentOnSummary: "auto",
   },
 };

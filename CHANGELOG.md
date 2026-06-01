@@ -4,6 +4,13 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+- Inbound fork handlers now default to `notify: "none"`, keeping handled events out of the parent transcript unless the handler explicitly escalates.
+- Fork handler startup acknowledgements are no longer posted into the parent transcript; startup is silent even for legacy `notify: "ack-and-summary"` configs.
+
+### Fixed
+- Fork-routed inbound asks are no longer also tracked as unresolved parent pending asks.
+
 ## [0.6.0] - 2026-05-03
 
 ### Added

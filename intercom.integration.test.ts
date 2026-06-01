@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter, once } from "node:events";
@@ -107,6 +107,26 @@ async function withForkHandlerRoutingDisabled<T>(fn: () => T | Promise<T>): Prom
     if (previous === undefined) delete process.env.PI_INTERCOM_FORK_HANDLER;
     else process.env.PI_INTERCOM_FORK_HANDLER = previous;
   }
+}
+
+async function withIntercomConfig<T>(config: Record<string, unknown>, fn: () => T | Promise<T>): Promise<T> {
+  const configPath = path.join(sharedHomeDir, ".pi", "agent", "intercom", "config.json");
+  mkdirSync(path.dirname(configPath), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  try {
+    return await fn();
+  } finally {
+    rmSync(configPath, { force: true });
+  }
+}
+
+async function waitForCondition(description: string, predicate: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${description}`);
 }
 
 interface CapturedToolResult {
@@ -588,6 +608,46 @@ test("busy non-interactive sessions auto-reply to top-level asks without abortin
     assert.match(reply.message.content.text, /non-interactive|cannot respond/i);
     assert.equal(abortCount, 0);
 
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+}));
+
+test("fork-routed inbound asks are not also listed as parent pending asks", { concurrency: false }, async () => withIntercomConfig({
+  inboundForkHandlers: {
+    enabled: true,
+    when: "always",
+    notify: "none",
+    piCommand: "/bin/true",
+    triggerParentOnSummary: false,
+  },
+}, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("busy-fork-parent", {
+    hasUI: true,
+    isIdle: () => false,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+
+    const target = await waitForSessionByName(planner, "busy-fork-parent");
+    const delivered = await planner.send(target.id, {
+      messageId: "forked-ask-1",
+      text: "Need a supervisor decision while the parent is busy.",
+      expectsReply: true,
+    });
+    assert.equal(delivered.delivered, true);
+
+    await waitForCondition("intercom fork handler launch", () => harness.entries.some((entry) => entry.type === "intercom_fork_handler_started"));
+
+    const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+    const pendingResult = await intercomTool.execute("pending-after-fork", { action: "pending" }, new AbortController().signal, undefined, harness.ctx);
+    assert.equal(pendingResult.isError, false);
+    assert.equal(pendingResult.content[0]?.text, "No unresolved inbound asks.");
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();

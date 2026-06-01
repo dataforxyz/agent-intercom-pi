@@ -29,6 +29,7 @@ test("loadConfig defaults inbound fork routing to auto", () => {
   try {
     const config = loadConfig();
     assert.equal(config.inboundForkHandlers.when, "auto");
+    assert.equal(config.inboundForkHandlers.notify, "none");
   } finally {
     restoreEnv();
     rmSync(agentDir, { recursive: true, force: true });

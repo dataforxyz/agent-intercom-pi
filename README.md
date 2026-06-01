@@ -372,7 +372,7 @@ Create `$PI_CODING_AGENT_DIR/intercom/config.json` when running Pi with an isola
   "inboundForkHandlers": {
     "enabled": true,
     "when": "auto",
-    "notify": "summary",
+    "notify": "none",
     "triggerParentOnSummary": "auto"
   }
 }
@@ -388,11 +388,11 @@ Create `$PI_CODING_AGENT_DIR/intercom/config.json` when running Pi with an isola
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 | `inboundForkHandlers.enabled` | true | Route inbound messages to background sibling Pi handlers instead of interrupting/queuing in the parent; set false to opt out |
 | `inboundForkHandlers.when` | `"auto"` | Wake the idle parent directly; fork when the parent is busy or has queued messages. Set `"busy"` to ignore queued-message heuristics, or `"always"` to fork all inbound messages |
-| `inboundForkHandlers.notify` | `"summary"` | Parent notification mode: `"ack-and-summary"`, `"summary"`, or `"none"` |
+| `inboundForkHandlers.notify` | `"none"` | Parent notification mode: `"none"` keeps handler work out of the parent transcript unless the handler explicitly escalates; `"summary"` copies handler receipts into the parent. `"ack-and-summary"` is accepted for compatibility but no startup ack is sent. |
 | `inboundForkHandlers.piCommand` | — | Optional Pi executable override for handler launch; `PI_INTERCOM_PI_BIN` also works |
 | `inboundForkHandlers.triggerParentOnSummary` | `"auto"` | Trigger policy for handler summaries: `"auto"` wakes the parent for asks, completed subagent results, and actionable updates; `true` always wakes; `false` keeps summaries display-only |
 
-Inbound fork handlers are delegated triage sessions. They receive the inbound message capsule, may answer directly when safe and derivable, and should escalate only for destructive actions, ambiguous user preference, external side effects, security/privacy/cost risk, conflict with parent work, or low confidence. For `ask` messages, handlers are instructed to reply with `intercom.send` plus the original `replyTo` id when safe so the sender is unblocked without waking the parent. Handler sessions advertise a `fork-handler:<id>` status tag, and messages from those sessions bypass default fork routing so true parent escalations reach the parent instead of spawning another handler. Local subagent result/control relays also use this path when possible and otherwise fall back to display-only delivery rather than starting a parent turn. Under the default `"auto"` trigger policy, handlers can opt out of waking the parent by including `Parent trigger: false` in the final summary.
+Inbound fork handlers are delegated triage sessions. They receive the inbound message capsule, may answer directly when safe and derivable, and should escalate only for destructive actions, ambiguous user preference, external side effects, security/privacy/cost risk, conflict with parent work, or low confidence. For `ask` messages, handlers are instructed to reply with `intercom.send` plus the original `replyTo` id when safe so the sender is unblocked without waking the parent. Handler sessions advertise a `fork-handler:<id>` status tag, and messages from those sessions bypass default fork routing so true parent escalations reach the parent instead of spawning another handler. Local subagent result/control relays also use this path when possible and otherwise fall back to display-only delivery rather than starting a parent turn. With the default `notify: "none"`, handled events stay out of the parent transcript; use `/intercom-handlers` or `/forks intercom` to inspect them. If `notify` is set to `"summary"` or compatibility mode `"ack-and-summary"`, the `"auto"` trigger policy wakes the parent for asks, completed subagent results, and actionable updates, and handlers can opt out by including `Parent trigger: false` in the final summary. Fork startup itself is always silent.
 
 Routine-success handler receipts are compacted before model context is built so repeated inbound-message summaries do not bloat later turns. Compaction is conservative: the receipt must show success/exit 0, a usable `Output:` log path with byte size, an absent or empty `Errors:` line, and no inline blocker/action-required markers. Handler id, message id, sender, exit, Output/Errors pointers, byte sizes, and a few summary lines stay inline. Failed receipts, blocker/action-required receipts, non-empty stderr, missing/unavailable output logs, and already-compacted receipts are left unchanged.
 

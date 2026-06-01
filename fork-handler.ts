@@ -240,7 +240,6 @@ function parentNotificationModeLines(run: IntercomForkHandlerRun): string[] {
       ? `Your final response WILL be copied into the parent transcript/context and may trigger a parent turn for asks, completed subagent results, or actionable updates.`
       : `Your final response WILL be copied into the parent transcript/context${run.triggerParentOnSummary ? " and will trigger a parent turn" : ""}.`,
     ...(run.triggerParentOnSummary === "auto" ? ["To opt out of a parent turn for a non-actionable summary, include exactly: Parent trigger: false"] : []),
-    ...(notify === "ack-and-summary" ? ["The parent already received a launch ack; do not repeat startup details unless relevant."] : []),
     "Keep the final response concise. If you already sent an intercom message to the parent, do not repeat its full content; just note that you escalated it.",
   ];
 }
@@ -361,15 +360,6 @@ function formatHandlerLogPath(label: "Output" | "Errors", filePath: string): str
   if (size === null) return `${label}: unavailable (${filePath}, missing)`;
   if (label === "Errors" && size === 0) return `${label}: none (${filePath}, 0 B)`;
   return `${label}: ${filePath} (${size} B)`;
-}
-
-function formatAck(run: IntercomForkHandlerRun, entry: InboundForkMessageEntry): string {
-  const sender = entry.from.name || entry.from.id.slice(0, 8);
-  return [
-    `pi-intercom received ${entry.message.expectsReply ? "an ask" : "a message"} from ${sender}.`,
-    `Launched background fork handler ${run.id}${run.pid ? ` (pid ${run.pid})` : ""}.`,
-    `Handler dir: ${run.dir}`,
-  ].join("\n");
 }
 
 function formatSummary(run: IntercomForkHandlerRun): string {
@@ -563,17 +553,6 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
     run.pid = launch.pid;
     run.status = "running";
     await saveHandlers();
-    if (config.notify === "ack-and-summary") {
-      pi.sendMessage(
-        {
-          customType: HANDLER_MESSAGE_TYPE,
-          content: formatAck(run, entry),
-          display: true,
-          details: { id: run.id, messageId: entry.message.id, status: "running" },
-        },
-        { triggerTurn: false },
-      );
-    }
     return true;
   } catch (error) {
     run.status = "failed";
