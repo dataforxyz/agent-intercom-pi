@@ -436,15 +436,7 @@ export function chooseContactTarget(currentSession: SessionInfo, sessions: Sessi
 }
 
 export function formatContactInstruction(contact: { target: string; id: string; name?: string; duplicateName?: boolean }): string {
-  const lines = [
-    "Contact me when you're done via pi-intercom:",
-    `intercom({ action: "send", to: ${JSON.stringify(contact.target)}, message: "..." })`,
-    "",
-    `Intercom target: ${contact.target}`,
-  ];
-  if (contact.name && contact.target !== contact.name) lines.push(`Session name: ${contact.name}${contact.duplicateName ? " (not used because it is duplicated)" : ""}`);
-  if (contact.id !== contact.target) lines.push(`Session ID fallback: ${contact.id}`);
-  return lines.join("\n");
+  return `Intercom send ID: ${contact.id}`;
 }
 
 interface ClipboardCopyResult {

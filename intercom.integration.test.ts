@@ -38,7 +38,8 @@ test("intercom contact id prefers unique session names and falls back to ids for
   const fallback = chooseContactTarget(current, [current, duplicate]);
   assert.equal(fallback.target, "session-1");
   assert.equal(fallback.duplicateName, true);
-  assert.match(formatContactInstruction(fallback), /intercom\(\{ action: "send", to: "session-1"/);
+  assert.equal(formatContactInstruction(fallback), "Intercom send ID: session-1");
+  assert.equal(formatContactInstruction(chooseContactTarget(current, [current, other])), "Intercom send ID: session-1");
 });
 
 async function waitForBrokerReady(broker: ChildProcessWithoutNullStreams): Promise<void> {
