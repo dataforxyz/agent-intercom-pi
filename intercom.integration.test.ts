@@ -1065,6 +1065,62 @@ test("subagent result intercom events fall back to display-only delivery for the
   assert.deepEqual(deliveryAcks, [{ requestId: "result-1", delivered: true }]);
 });
 
+test("live idle local subagent result relay triggers the orchestrator", { concurrency: false }, async () => withForkHandlerRoutingDisabled(async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const harness = createExtensionHarness("orchestrator", { hasUI: true, isIdle: () => true });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+
+    harness.pi.events.emit("subagent:result-intercom", {
+      to: "orchestrator",
+      requestId: "result-live-idle",
+      message: "subagent result\n\nRun: 78f659a3\nAgent: worker\nStatus: completed",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /From subagent-result/);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Status: completed/);
+    assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+  }
+}));
+
+test("busy local subagent result relay queues until orchestrator is idle", { concurrency: false }, async () => withForkHandlerRoutingDisabled(async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  let idle = false;
+  const harness = createExtensionHarness("orchestrator", { hasUI: true, isIdle: () => idle });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+
+    harness.pi.events.emit("subagent:result-intercom", {
+      to: "orchestrator",
+      requestId: "result-live-busy",
+      message: "subagent result\n\nRun: 78f659a3\nAgent: worker\nStatus: completed",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(harness.sentMessages.length, 0);
+
+    idle = true;
+    await harness.emitLifecycle("agent_end");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /From subagent-result/);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Status: completed/);
+    assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+  }
+}));
+
 test("async ask can be replied to later from the single pending ask fallback", { concurrency: false }, async () => {
   const { planner, orchestrator, cleanup } = await setupClients();
   const replyTracker = new ReplyTracker();

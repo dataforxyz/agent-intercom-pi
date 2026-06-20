@@ -955,7 +955,16 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       } catch {
         parentIsBusy = true;
       }
-      if (await maybeLaunchInboundForkHandler(ctx, entry, parentIsBusy)) {
+      const parentHasPendingMessages = typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages();
+      if (await maybeLaunchInboundForkHandler(ctx, entry, parentIsBusy, parentHasPendingMessages)) {
+        return;
+      }
+      if (!parentIsBusy) {
+        sendIncomingMessage(entry, "trigger");
+        return;
+      }
+      if (ctx.hasUI) {
+        queueIdleMessage(entry);
         return;
       }
     }
