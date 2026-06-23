@@ -441,6 +441,44 @@ test("sessions publish automatic lifecycle status", { concurrency: false }, asyn
   }
 });
 
+test("intercom tool resolves a target by the short id shown in list", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("shortid-worker", { hasUI: true });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+
+    // `list` renders peers as `name (id.slice(0,8))`; target by that short id.
+    const plannerSession = await waitForSessionByName(planner, "planner");
+    const shortId = plannerSession.id.slice(0, 8);
+    assert.notEqual(shortId, plannerSession.id);
+
+    const received = new Promise<Message>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for short-id message")), 5000);
+      planner.on("message", (_from: SessionInfo, message: Message) => {
+        clearTimeout(timeout);
+        resolve(message);
+      });
+    });
+
+    const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+    const result = await intercomTool.execute("send-shortid", {
+      action: "send",
+      to: shortId,
+      message: "ping via short id",
+    }, new AbortController().signal, undefined, harness.ctx);
+
+    assert.equal(result.details?.delivered, true);
+    const message = await received;
+    assert.match(message.content.text ?? "", /ping via short id/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
 test("busy interactive sessions idle-gate top-level asks without aborting", { concurrency: false }, async () => withForkHandlerRoutingDisabled(async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();

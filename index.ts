@@ -925,7 +925,21 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (byName.length > 1) {
       throw new Error(`Multiple sessions named "${nameOrId}" are connected. Use the session ID instead.`);
     }
-    return byName[0]?.id ?? null;
+    if (byName[0]) {
+      return byName[0].id;
+    }
+    // Accept the short ID shown by `list` (e.g. "5287dff3" = id.slice(0,8)) or any
+    // unambiguous ID prefix, so a target copied straight out of `list` resolves.
+    if (nameOrId.length >= 4) {
+      const byPrefix = sessions.filter(s => s.id.startsWith(nameOrId));
+      if (byPrefix.length > 1) {
+        throw new Error(`Multiple sessions match the ID prefix "${nameOrId}". Use the full session ID or a unique name.`);
+      }
+      if (byPrefix[0]) {
+        return byPrefix[0].id;
+      }
+    }
+    return null;
   }
   async function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): Promise<void> {
     const now = Date.now();
