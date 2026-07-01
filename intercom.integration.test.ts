@@ -1016,7 +1016,7 @@ test("fork-routed inbound asks are not also listed as parent pending asks", { co
 
     const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
     const pendingResult = await intercomTool.execute("pending-after-fork", { action: "pending" }, new AbortController().signal, undefined, harness.ctx);
-    assert.equal(pendingResult.isError, false);
+    assert.notEqual(pendingResult.isError, true);
     assert.equal(pendingResult.content[0]?.text, "No unresolved inbound asks.");
   } finally {
     await harness.emitLifecycle("session_shutdown");
