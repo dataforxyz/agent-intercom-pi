@@ -73,7 +73,7 @@ const defaults: IntercomConfig = {
   inboundForkHandlers: {
     enabled: true,
     when: "auto",
-    notify: "none",
+    notify: "summary",
     triggerParentOnSummary: "auto",
   },
 };
