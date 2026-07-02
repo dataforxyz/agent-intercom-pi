@@ -96,7 +96,7 @@ test("large subagent-result payloads are compacted for fork handler prompts", ()
   assert.match(prompt, /Full inbound message path:/);
 });
 
-test("auto parent trigger wakes for subagent results but not routine progress", () => {
+test("auto parent trigger wakes local subagent relays without launching another fork", () => {
   const progress = makeEntry(false);
   progress.bodyText = "Subagent progress update. Reviewing PR now.";
   progress.message.content.text = progress.bodyText;
@@ -107,9 +107,17 @@ test("auto parent trigger wakes for subagent results but not routine progress", 
   assert.equal(shouldLaunchInboundForkHandler(ask), true);
 
   const actionable = makeEntry(false);
-  actionable.bodyText = "Subagent needs attention before continuing.";
+  actionable.bodyText = "External worker needs attention before continuing.";
   actionable.message.content.text = actionable.bodyText;
   assert.equal(shouldLaunchInboundForkHandler(actionable), true);
+
+  const control = makeEntry(false);
+  control.from.id = "subagent-control";
+  control.from.name = "subagent-control";
+  control.bodyText = "subagent needs attention before continuing.";
+  control.message.content.text = control.bodyText;
+  assert.equal(shouldAutoTriggerParent(control), true);
+  assert.equal(shouldLaunchInboundForkHandler(control), false);
 
   const result = makeEntry(false);
   result.from.id = "subagent-result";
@@ -117,7 +125,7 @@ test("auto parent trigger wakes for subagent results but not routine progress", 
   result.bodyText = "subagent results\n\nStatus: completed";
   result.message.content.text = result.bodyText;
   assert.equal(shouldAutoTriggerParent(result), true);
-  assert.equal(shouldLaunchInboundForkHandler(result), true);
+  assert.equal(shouldLaunchInboundForkHandler(result), false);
 
   const run = { ...makeRun(), triggerParentOnSummary: "auto" as const, autoTriggerParentOnSummary: true };
   assert.equal(resolveTriggerParentOnSummary(run), true);

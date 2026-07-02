@@ -307,6 +307,10 @@ function isSubagentResultEntry(entry: InboundForkMessageEntry): boolean {
   return entry.from.id === "subagent-result" || entry.from.name === "subagent-result";
 }
 
+function isSubagentRelayEntry(entry: InboundForkMessageEntry): boolean {
+  return isSubagentResultEntry(entry) || entry.from.id === "subagent-control" || entry.from.name === "subagent-control";
+}
+
 const PARENT_TRIGGER_FALSE_PATTERN = /(?:pi-intercom:\s*)?(?:trigger[-_ ]?parent|parent[-_ ]?trigger|triggerParentOnSummary)\s*[:=]\s*(?:false|no|off|0)\b/i;
 const PARENT_TRIGGER_TRUE_PATTERN = /(?:pi-intercom:\s*)?(?:trigger[-_ ]?parent|parent[-_ ]?trigger|triggerParentOnSummary)\s*[:=]\s*(?:true|yes|on|1)\b/i;
 
@@ -319,8 +323,13 @@ function explicitParentTrigger(text: string): boolean | undefined {
 const ACTIONABLE_PARENT_UPDATE_PATTERN = /\b(?:needs? (?:attention|decision|help)|blocked|review[- ]?complete|status:\s*completed)\b/i;
 
 export function shouldLaunchInboundForkHandler(entry: InboundForkMessageEntry): boolean {
+  // Local subagent bridge messages are already background-work summaries/control
+  // notices for this parent. Forking them creates a second fork to summarize a
+  // summary, can duplicate parent-visible updates, and violates the no-fork-tree
+  // intent. Deliver/queue them to the parent instead; shouldAutoTriggerParent
+  // still wakes the parent when appropriate.
+  if (isSubagentRelayEntry(entry)) return false;
   if (entry.message.expectsReply === true) return true;
-  if (isSubagentResultEntry(entry)) return true;
   if (explicitParentTrigger(entry.bodyText) === true) return true;
   if (ACTIONABLE_PARENT_UPDATE_PATTERN.test(entry.bodyText)) return true;
   return false;
@@ -329,6 +338,7 @@ export function shouldLaunchInboundForkHandler(entry: InboundForkMessageEntry): 
 export function shouldAutoTriggerParent(entry: InboundForkMessageEntry): boolean {
   const explicit = explicitParentTrigger(entry.bodyText);
   if (explicit !== undefined) return explicit;
+  if (isSubagentRelayEntry(entry)) return true;
   return shouldLaunchInboundForkHandler(entry);
 }
 
