@@ -756,7 +756,6 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
       await failBackgroundHandlerLaunch(run.id, launch.error).catch((error) => {
         console.error("[pi-intercom] Failed to compensate background event launch failure", error);
       });
-      await kickIntercomBackgroundQueueDrain(pi, ctx, config, `handler ${run.id} launch failure`);
       await cleanupParentSessionSnapshot(failed);
       if (!handlerRuns.some((candidate) => candidate.id === run.id)) handlerRuns.push(failed);
       await saveHandlers();
@@ -778,7 +777,6 @@ export async function launchIntercomForkHandler(pi: ExtensionAPI, ctx: Extension
     await failBackgroundHandlerLaunch(run.id, error).catch((compensateError) => {
       console.error("[pi-intercom] Failed to compensate background event launch exception", compensateError);
     });
-    await kickIntercomBackgroundQueueDrain(pi, ctx, config, `handler ${run.id} launch exception`);
     await cleanupParentSessionSnapshot(run);
     await saveHandlers();
     console.error("[pi-intercom] Failed to launch fork handler", error);
