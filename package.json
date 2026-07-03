@@ -16,11 +16,15 @@
     "fork-runtime-fallback.ts",
     "reply-tracker.ts",
     "broker/**/*.ts",
+    "codex/**/*.ts",
     "ui/**/*.ts",
-    "skills/**/*"
+    "skills/**/*",
+    ".codex-plugin/**/*",
+    ".mcp.json"
   ],
   "scripts": {
-    "test": "tsx --test background-lineage.test.ts broker/client.test.ts broker/framing.test.ts broker/paths.test.ts broker/spawn.test.ts clipboard.test.ts config.test.ts context-compaction.test.ts fork-handler.test.ts fork-routing.test.ts fork-runtime-state.test.ts reply-tracker.test.ts intercom.integration.test.ts test/inline-message.test.ts test/overlay-width.test.ts"
+    "codex:mcp": "tsx codex/server.ts",
+    "test": "tsx --test background-lineage.test.ts broker/client.test.ts broker/framing.test.ts broker/paths.test.ts broker/spawn.test.ts clipboard.test.ts codex/runtime.test.ts codex/mcp-protocol.test.ts config.test.ts context-compaction.test.ts fork-handler.test.ts fork-routing.test.ts fork-runtime-state.test.ts reply-tracker.test.ts intercom.integration.test.ts test/inline-message.test.ts test/overlay-width.test.ts"
   },
   "keywords": [
     "pi-package"

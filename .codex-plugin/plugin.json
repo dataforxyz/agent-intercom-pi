@@ -1,0 +1,39 @@
+{
+  "name": "pi-intercom",
+  "version": "0.6.0",
+  "description": "Direct local messaging between Pi and Codex coding-agent sessions.",
+  "author": {
+    "name": "dataforxyz",
+    "email": "support@datafor.xyz",
+    "url": "https://github.com/dataforxyz"
+  },
+  "homepage": "https://github.com/dataforxyz/pi-intercom",
+  "repository": "https://github.com/dataforxyz/pi-intercom",
+  "license": "MIT",
+  "keywords": [
+    "intercom",
+    "codex",
+    "pi",
+    "multi-agent",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Pi Intercom",
+    "shortDescription": "Coordinate local Pi and Codex sessions",
+    "longDescription": "Pi Intercom provides direct 1:1 local messaging for coding-agent sessions. The Pi extension offers native inline delivery and overlays; the Codex plugin exposes MCP tools for listing sessions, sending messages, asking questions, replying to pending asks, and checking pending messages.",
+    "developerName": "dataforxyz",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/dataforxyz/pi-intercom",
+    "privacyPolicyURL": "https://github.com/dataforxyz/pi-intercom",
+    "termsOfServiceURL": "https://github.com/dataforxyz/pi-intercom",
+    "defaultPrompt": [
+      "Use Pi Intercom to coordinate with another local coding-agent session"
+    ],
+    "brandColor": "#2563EB"
+  }
+}

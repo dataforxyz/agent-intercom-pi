@@ -4,6 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+- Added a preview Codex MCP adapter with narrow tools for session identity,
+  status, listing, summaries, send, ask, pending, and reply.
+- Added Codex plugin metadata and a `codex-intercom` skill for pull-based
+  intercom coordination from Codex sessions.
+
 ### Changed
 - Inbound fork handlers now default to `notify: "none"`, keeping handled events out of the parent transcript unless the handler explicitly escalates.
 - Fork handler startup acknowledgements are no longer posted into the parent transcript; startup is silent even for legacy `notify: "ack-and-summary"` configs.

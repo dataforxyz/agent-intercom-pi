@@ -58,6 +58,42 @@ The session list only shows intercom-connected sessions, not every open Pi proce
 
 If a session is unnamed, pi-intercom now exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the Pi session title, so `pi --resume` can keep showing the transcript snippet instead of a generic `session-...` name.
 
+## Codex Plugin Preview
+
+Pi-intercom can also run as a Codex plugin. The Codex side joins the same local
+intercom broker as a regular session and exposes MCP tools:
+
+- `intercom_whoami`
+- `intercom_status`
+- `intercom_list`
+- `intercom_set_summary`
+- `intercom_send`
+- `intercom_ask`
+- `intercom_pending`
+- `intercom_reply`
+
+Local development setup:
+
+```bash
+git clone https://github.com/dataforxyz/pi-intercom.git
+cd pi-intercom
+npm install
+codex mcp add pi-intercom -- npx --no-install tsx ./codex/server.ts
+```
+
+Optional environment variables:
+
+```bash
+CODEX_INTERCOM_NAME=planner
+CODEX_INTERCOM_SESSION_ID=codex-planner
+CODEX_INTERCOM_MODEL=codex
+```
+
+Codex MCP does not currently provide Pi-style unsolicited turn wake-up. Incoming
+messages are queued while the MCP server is running; call `intercom_pending` to
+read unread messages and unresolved asks. Use `intercom_ask` when you need a
+blocking answer from another session.
+
 ## Quick Start
 
 ### From the Keyboard
