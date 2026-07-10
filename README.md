@@ -60,6 +60,10 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
+If you upgrade pi-intercom while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
+
+If `/intercom` still reports no peers, first confirm the other Pi windows have pi-intercom loaded and have also been reloaded. Open Pi processes without the extension, disabled sessions, and sessions using a different `PI_CODING_AGENT_DIR` intentionally do not appear in the same list.
+
 If a session is unnamed, pi-intercom now exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the Pi session title, so `pi --resume` can keep showing the transcript snippet instead of a generic `session-...` name.
 
 ## Quick Start
@@ -464,6 +468,7 @@ Runtime files live at `~/.pi/agent/intercom/` by default, or `$PI_CODING_AGENT_D
 - `broker.sock` — Unix domain socket for communication (macOS/Linux only; Windows uses a named pipe instead)
 - `broker-launch.vbs` — Windows helper script used to launch the broker without a console window
 - `broker.pid` — Broker process ID
+- `broker.owner` — Lifetime ownership record that prevents another live broker from replacing the active socket
 - `broker.spawn.lock` — Auto-spawn lock file
 - `broker.port.json` — Dynamic localhost TCP endpoint, only when Windows TCP transport is explicitly enabled
 - `broker-asks.json` — Expiring ask/reply authorization edges; restored as deferred after broker restart
@@ -475,7 +480,7 @@ Runtime files live at `~/.pi/agent/intercom/` by default, or `$PI_CODING_AGENT_D
 
 **Local IPC instead of TCP.** Same-machine only by design. `pi-intercom` uses Unix sockets on macOS/Linux and a named pipe on Windows, which keeps setup simple and avoids port management. Windows TCP is available only as an explicit escape hatch with `PI_INTERCOM_TRANSPORT=tcp` (or `PI_INTERCOM_TCP=1`) for environments where named pipes are blocked. In that mode the broker binds a dynamic `127.0.0.1` port, records the endpoint plus a local secret under the intercom state dir, and requires that secret before health or registration succeeds. Health replies do not echo the secret, so a random localhost process cannot discover it through the broker protocol.
 
-**Auto-spawn with file lock.** The broker starts on first connection and exits after 5 seconds idle. There is no daemon to manage. A spawn lock file, keyed by PID and timestamp, prevents duplicate brokers when multiple sessions start at once.
+**Auto-spawn with two levels of ownership.** The broker starts on first connection and exits after 5 seconds idle. There is no daemon to manage. A short-lived spawn lock, keyed by PID and timestamp, coordinates clients that try to start the broker at the same time. A separate lifetime ownership record prevents any second live broker process from unlinking or replacing the active socket, including brokers launched manually or by different host adapters.
 
 **`ask` has a soft foreground wait.** The client waits up to 30 seconds for a matching reply and returns a prompt reply as the tool result. After that soft wait expires, the sender continues and asks the broker to change the edge from blocking to deferred. That control operation is explicitly acknowledged. Deferred asks permit reverse asks, remain late-replyable until the 10-minute expiry, and survive broker restart without recreating a blocking dependency. Reply hints make the flow practical by preserving the exact reply context.
 
