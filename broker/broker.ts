@@ -17,6 +17,7 @@ import {
 } from "./paths.ts";
 import { getAskTimeoutMs } from "../config.ts";
 import { writeDurableJson } from "../durable-json.ts";
+import { acquireBrokerOwnership, hasBrokerOwnership, releaseBrokerOwnership } from "./ownership.ts";
 import type {
   AskCancellationReason,
   BrokerErrorCode,
@@ -31,6 +32,7 @@ import type {
 const INTERCOM_DIR = getIntercomDirPath();
 const LISTEN_TARGET = getBrokerListenTarget();
 const PID_PATH = join(INTERCOM_DIR, "broker.pid");
+const OWNER_PATH = join(INTERCOM_DIR, "broker.owner");
 const PORT_PATH = getBrokerPortFilePath(INTERCOM_DIR);
 const ASK_STATE_PATH = getBrokerAskStateFilePath(INTERCOM_DIR);
 const BROKER_STATE_ID = randomUUID();
@@ -230,6 +232,7 @@ class IntercomBroker {
 
   constructor() {
     ensureIntercomRuntimeDir(INTERCOM_DIR);
+    acquireBrokerOwnership(OWNER_PATH);
     this.loadAskEdges();
     if (typeof LISTEN_TARGET === "string" && process.platform !== "win32") {
       try {
@@ -1156,22 +1159,26 @@ class IntercomBroker {
       clearTimeout(edge.timeout);
     }
     this.askEdges.clear();
-    if (typeof LISTEN_TARGET === "string" && process.platform !== "win32") {
+    const ownsBroker = hasBrokerOwnership(OWNER_PATH);
+    if (ownsBroker && typeof LISTEN_TARGET === "string" && process.platform !== "win32") {
       try {
         unlinkSync(LISTEN_TARGET);
       } catch {
         // The socket may already be gone if shutdown started after a disconnect.
       }
     }
-    try {
-      unlinkSync(PORT_PATH);
-    } catch {
-      // The TCP endpoint file only exists when opt-in TCP transport is active.
-    }
-    try {
-      unlinkSync(PID_PATH);
-    } catch {
-      // The PID file may already be gone if startup never completed.
+    if (ownsBroker) {
+      try {
+        unlinkSync(PORT_PATH);
+      } catch {
+        // The TCP endpoint file only exists when opt-in TCP transport is active.
+      }
+      try {
+        unlinkSync(PID_PATH);
+      } catch {
+        // The PID file may already be gone if startup never completed.
+      }
+      releaseBrokerOwnership(OWNER_PATH);
     }
     this.server.close();
     process.exit(0);
