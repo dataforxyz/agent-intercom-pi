@@ -98,6 +98,18 @@ test("replyTo resolves the exact pending ask", () => {
   assert.throws(() => tracker.resolveReplyTarget({ to: "planner", replyTo: "ask-2" }, 1002), /is not from/);
 });
 
+test("same message ID from different senders remains independently addressable", () => {
+  const tracker = new ReplyTracker();
+  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("shared-id", "First"), 1000);
+  tracker.recordIncomingMessage(createSession("reviewer-id", "reviewer"), createMessage("shared-id", "Second"), 1001);
+
+  assert.equal(tracker.listPending(1002).length, 2);
+  assert.throws(() => tracker.resolveReplyTarget({ replyTo: "shared-id" }, 1002), /Multiple pending asks use message ID/);
+  assert.equal(tracker.resolveReplyTarget({ replyTo: "shared-id", to: "reviewer-id" }, 1002).from.id, "reviewer-id");
+  tracker.markReplied("shared-id", "reviewer-id");
+  assert.deepEqual(tracker.listPending(1003).map((context) => context.from.id), ["planner-id"]);
+});
+
 test("reply errors when no context and no pending asks", () => {
   const tracker = new ReplyTracker();
 

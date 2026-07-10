@@ -120,7 +120,7 @@ See auth.ts:142-156.
 
 The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients do not need raw sender or `replyTo` IDs. Incoming messages are first written to a durable per-session inbox. Messages arriving within a 300 ms quiet window are combined into one model turn, with a 1-second maximum batching delay so a steady stream cannot postpone delivery forever. Busy sessions keep the batch queued until they are idle. Every original sender, message ID, timestamp, attachment, and reply context remains available in the batch details.
 
-The sender receives two distinct delivery states in structured tool details: `accepted` means the broker accepted the message for routing, while `delivered` means the receiver durably queued it and acknowledged the delivery. Attachment content is included in the agent-visible body, and delivered messages are rendered inline and stored in Pi session history.
+The sender receives two distinct delivery states in structured tool details: `accepted` means the broker accepted the message for routing, while `delivered` means the receiver durably queued it and acknowledged the delivery. Outbound messages are also written to a durable per-session outbox before transmission. If the broker disconnects between acceptance and receiver acknowledgement, the next connection automatically replays the original target, payload, and message ID. Attachment content is included in the agent-visible body, and delivered messages are rendered inline and stored in Pi session history.
 
 ## Workflow: Planner-Worker Coordination
 
@@ -351,7 +351,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`pending`** — Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. Useful when replying after the original triggered turn.
 
-**`status`** — Shows connection status, session ID, total count of active sessions (including the current session), and queued inbox/pending-ask counts.
+**`status`** — Shows connection status, session ID, total count of active sessions (including the current session), and queued inbox, outbox, and pending-ask counts.
 
 ## Keyboard Shortcuts
 
@@ -405,7 +405,7 @@ Custom broker commands are trusted local configuration: anyone who can edit this
 
 Pi-intercom publishes live session status automatically. Sessions register as `idle`, switch to `thinking` while the agent is running, show `tool:<name>` during tool execution, and return to `idle` on agent completion. If `status` is set in config, it is appended as context instead of replacing the lifecycle status.
 
-By default, runtime state and config live under `~/.pi/agent/intercom`. If Pi is launched with `PI_CODING_AGENT_DIR`, pi-intercom uses `$PI_CODING_AGENT_DIR/intercom` instead, including `config.json`, broker PID/lock files, sockets, durable inboxes, ask state, and launcher state. `PI_INTERCOM_ASK_WAIT_MS` controls the foreground ask wait (30 seconds by default); `PI_INTERCOM_ASK_TIMEOUT_MS` controls how long a deferred ask remains replyable (10 minutes by default).
+By default, runtime state and config live under `~/.pi/agent/intercom`. If Pi is launched with `PI_CODING_AGENT_DIR`, pi-intercom uses `$PI_CODING_AGENT_DIR/intercom` instead, including `config.json`, broker PID/lock files, sockets, durable inboxes/outboxes, ask state, and launcher state. `PI_INTERCOM_ASK_WAIT_MS` controls the foreground ask wait (30 seconds by default); `PI_INTERCOM_ASK_TIMEOUT_MS` controls how long a deferred ask remains replyable (10 minutes by default).
 
 ## How It Works
 
@@ -435,7 +435,7 @@ graph TB
 
 The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first intercom-enabled session needs it and exits after 5 seconds when the last connected session disconnects. Clients now reconnect automatically if the broker disappears and later comes back.
 
-Messages use strict `pi-intercom` protocol v2 over length-prefixed JSON on a local socket/pipe transport (4-byte length + JSON payload). Registration rejects incompatible protocol versions instead of attempting a partially compatible connection. The protocol includes request correlation, structured error codes, delivery IDs, receiver acknowledgements, retry deduplication by sender session plus message ID, payload and pending-work bounds, a frame-size cap, byte-weighted per-connection rate limiting, and no-op presence coalescing.
+Messages use strict `pi-intercom` protocol v3 over length-prefixed JSON on a local socket/pipe transport (4-byte length + JSON payload). Registration rejects incompatible protocol versions instead of attempting a partially compatible connection. The protocol includes request correlation, structured error codes, delivery IDs, receiver acknowledgements and rejections, retry deduplication by sender session plus message ID, acknowledged ask controls, payload and pending-work bounds, a frame-size cap, byte-weighted per-connection rate limiting, and no-op presence coalescing.
 
 The receiver acknowledges only after atomically writing the message to its per-session inbox. Delivery is therefore at least once across reconnects and reloads. There is one narrow crash window after a batch is injected into Pi but before its inbox entries are marked consumed; after recovery, that batch can be shown again rather than silently lost.
 
@@ -452,6 +452,7 @@ Runtime files live at `~/.pi/agent/intercom/` by default, or `$PI_CODING_AGENT_D
 - `broker-asks.json` — Expiring ask/reply authorization edges; restored as deferred after broker restart
 - `config.json` — User configuration
 - `inbox/<session-hash>.json` — Durable ordered inbound messages and receiver-side deduplication state
+- `outbox/<session-hash>.json` — Durable unfinished outbound messages replayed after reconnect
 
 ## Design Decisions
 
@@ -459,7 +460,7 @@ Runtime files live at `~/.pi/agent/intercom/` by default, or `$PI_CODING_AGENT_D
 
 **Auto-spawn with file lock.** The broker starts on first connection and exits after 5 seconds idle. There is no daemon to manage. A spawn lock file, keyed by PID and timestamp, prevents duplicate brokers when multiple sessions start at once.
 
-**`ask` has a soft foreground wait.** The client waits up to 30 seconds for a matching reply and returns a prompt reply as the tool result. After that soft wait expires, the sender continues and the broker changes the ask from blocking to deferred. Deferred asks permit reverse asks, remain late-replyable until the 10-minute expiry, and survive broker restart without recreating a blocking dependency. Reply hints make the flow practical by preserving the exact reply context.
+**`ask` has a soft foreground wait.** The client waits up to 30 seconds for a matching reply and returns a prompt reply as the tool result. After that soft wait expires, the sender continues and asks the broker to change the edge from blocking to deferred. That control operation is explicitly acknowledged. Deferred asks permit reverse asks, remain late-replyable until the 10-minute expiry, and survive broker restart without recreating a blocking dependency. Reply hints make the flow practical by preserving the exact reply context.
 
 ## pi-intercom vs pi-messenger
 
@@ -481,7 +482,9 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 ├── index.ts              # Extension entry point
 ├── types.ts              # SessionInfo, Message, protocol types
 ├── config.ts             # Config loading
+├── durable-json.ts       # Atomic fsync-backed JSON persistence helper
 ├── inbound-inbox.ts      # Durable inbound queue and deduplication
+├── outbound-outbox.ts    # Durable sender replay queue
 ├── broker/
 │   ├── broker.ts         # Broker process
 │   ├── client.ts         # IntercomClient class
@@ -508,3 +511,4 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 - **Only connected sessions appear** — The list shows Pi sessions that have loaded `pi-intercom` and successfully registered with the broker, not every open Pi process on the machine
 - **Broker lifecycle** — The broker auto-spawns on first use and exits when idle; sessions reconnect automatically if the broker restarts
 - **At-least-once recovery** — A crash in the small interval between Pi injection and inbox consumption can replay a batch after restart
+- **Bounded sender queue** — Each session keeps at most 256 unfinished outbound messages; definitive delivery failures are removed rather than retried forever

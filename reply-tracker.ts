@@ -16,6 +16,10 @@ function matchesPendingSender(context: IntercomContext, to: string): boolean {
   return context.from.name?.toLowerCase() === to.toLowerCase();
 }
 
+function contextKey(fromSessionId: string, messageId: string): string {
+  return `${fromSessionId}\u0000${messageId}`;
+}
+
 export class ReplyTracker {
   private readonly pendingAsks = new Map<string, IntercomContext>();
   private readonly pendingTurnContexts: IntercomContext[][] = [];
@@ -24,7 +28,8 @@ export class ReplyTracker {
   constructor(private readonly askTimeoutMs = getAskTimeoutMs()) {}
 
   recordIncomingMessage(from: SessionInfo, message: Message, receivedAt = Date.now()): IntercomContext {
-    const existing = this.pendingAsks.get(message.id);
+    const key = contextKey(from.id, message.id);
+    const existing = this.pendingAsks.get(key);
     const context = {
       from,
       message,
@@ -32,7 +37,7 @@ export class ReplyTracker {
       ...(existing?.deferredAt === undefined ? {} : { deferredAt: existing.deferredAt }),
     };
     if (message.expectsReply) {
-      this.pendingAsks.set(message.id, context);
+      this.pendingAsks.set(key, context);
     }
     return context;
   }
@@ -66,14 +71,18 @@ export class ReplyTracker {
     this.pruneExpired(now);
 
     if (options.replyTo) {
-      const target = this.pendingAsks.get(options.replyTo);
-      if (!target) {
+      const candidates = Array.from(this.pendingAsks.values()).filter((context) => context.message.id === options.replyTo);
+      if (candidates.length === 0) {
         throw new Error(`No pending ask with message ID "${options.replyTo}"`);
       }
-      if (options.to && !matchesPendingSender(target, options.to)) {
+      const matches = options.to ? candidates.filter((context) => matchesPendingSender(context, options.to!)) : candidates;
+      if (matches.length === 0) {
         throw new Error(`Pending ask "${options.replyTo}" is not from "${options.to}"`);
       }
-      return target;
+      if (matches.length > 1) {
+        throw new Error(`Multiple pending asks use message ID "${options.replyTo}" — specify \`to\``);
+      }
+      return matches[0]!;
     }
 
     if (this.currentTurnContexts.length > 0) {
@@ -120,29 +129,44 @@ export class ReplyTracker {
     throw new Error("Multiple pending asks — specify `replyTo` using a message ID from `pending`");
   }
 
-  markReplied(replyTo: string): void {
-    this.dismissPendingAsk(replyTo);
+  markReplied(replyTo: string, fromSessionId?: string): void {
+    this.dismissPendingAsk(replyTo, fromSessionId);
   }
 
-  markDeferred(replyTo: string, deferredAt = Date.now()): boolean {
-    const context = this.pendingAsks.get(replyTo);
-    if (!context) return false;
-    context.deferredAt = deferredAt;
-    return true;
+  markDeferred(replyTo: string, fromSessionIdOrDeferredAt?: string | number, deferredAt = Date.now()): boolean {
+    const fromSessionId = typeof fromSessionIdOrDeferredAt === "string" ? fromSessionIdOrDeferredAt : undefined;
+    const effectiveDeferredAt = typeof fromSessionIdOrDeferredAt === "number" ? fromSessionIdOrDeferredAt : deferredAt;
+    let changed = false;
+    for (const context of this.pendingAsks.values()) {
+      if (context.message.id === replyTo && (!fromSessionId || context.from.id === fromSessionId)) {
+        context.deferredAt = effectiveDeferredAt;
+        changed = true;
+      }
+    }
+    return changed;
   }
 
-  dismissPendingAsk(replyTo: string): void {
-    this.pendingAsks.delete(replyTo);
+  dismissPendingAsk(replyTo: string, fromSessionId?: string): void {
+    for (const [key, context] of this.pendingAsks) {
+      if (context.message.id === replyTo && (!fromSessionId || context.from.id === fromSessionId)) {
+        this.pendingAsks.delete(key);
+      }
+    }
     for (let batchIndex = this.pendingTurnContexts.length - 1; batchIndex >= 0; batchIndex -= 1) {
       const batch = this.pendingTurnContexts[batchIndex]!;
       for (let contextIndex = batch.length - 1; contextIndex >= 0; contextIndex -= 1) {
-        if (batch[contextIndex]?.message.id === replyTo) {
+        if (
+          batch[contextIndex]?.message.id === replyTo
+          && (!fromSessionId || batch[contextIndex]?.from.id === fromSessionId)
+        ) {
           batch.splice(contextIndex, 1);
         }
       }
       if (batch.length === 0) this.pendingTurnContexts.splice(batchIndex, 1);
     }
-    this.currentTurnContexts = this.currentTurnContexts.filter((context) => context.message.id !== replyTo);
+    this.currentTurnContexts = this.currentTurnContexts.filter((context) =>
+      context.message.id !== replyTo || (fromSessionId !== undefined && context.from.id !== fromSessionId)
+    );
   }
 
   listPending(now = Date.now()): IntercomContext[] {
@@ -151,9 +175,9 @@ export class ReplyTracker {
   }
 
   private pruneExpired(now: number): void {
-    for (const [messageId, context] of this.pendingAsks) {
+    for (const context of Array.from(this.pendingAsks.values())) {
       if (now - context.receivedAt > this.askTimeoutMs) {
-        this.dismissPendingAsk(messageId);
+        this.dismissPendingAsk(context.message.id, context.from.id);
       }
     }
   }

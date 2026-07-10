@@ -39,6 +39,7 @@ export type DeliveryFailureCode =
   | "INVALID_REPLY_TARGET"
   | "MUTUAL_ASK"
   | "DUPLICATE_MESSAGE_ID"
+  | "CONFLICTING_MESSAGE_ID"
   | "TOO_MANY_PENDING_DELIVERIES"
   | "TOO_MANY_PENDING_ASKS"
   | "RECIPIENT_DISCONNECTED"
@@ -63,8 +64,9 @@ export type ClientMessage =
   | { type: "list"; requestId: string }
   | { type: "send"; to: string; message: Message }
   | { type: "message_received"; deliveryId: string }
-  | { type: "defer_ask"; messageId: string }
-  | { type: "cancel_ask"; messageId: string }
+  | { type: "message_rejected"; deliveryId: string; code: "CONFLICTING_MESSAGE_ID"; reason: string }
+  | { type: "defer_ask"; requestId: string; messageId: string }
+  | { type: "cancel_ask"; requestId: string; messageId: string }
   | { type: "presence"; name?: string; status?: string; model?: string };
 
 export type BrokerMessage =
@@ -79,4 +81,5 @@ export type BrokerMessage =
   | { type: "delivered"; messageId: string; deliveryId: string }
   | { type: "delivery_failed"; messageId: string; accepted: boolean; code: DeliveryFailureCode; reason: string }
   | { type: "ask_deferred"; messageId: string; fromSessionId: string }
-  | { type: "ask_cancelled"; messageId: string; fromSessionId: string; reason: AskCancellationReason };
+  | { type: "ask_cancelled"; messageId: string; fromSessionId: string; reason: AskCancellationReason }
+  | { type: "ask_control_result"; requestId: string; action: "defer" | "cancel"; messageId: string; applied: boolean };

@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   getBrokerLaunchSpec,
   getBrokerSpawnOptions,
@@ -11,6 +13,7 @@ import {
   getWindowsBrokerCommandLine,
   getWindowsHiddenLauncherPath,
   isBrokerHealthOkMessage,
+  stopBrokerProcess,
 } from "./spawn.ts";
 
 test("getTsxCliPath resolves tsx cli via module resolution", () => {
@@ -123,8 +126,25 @@ test("getBrokerSpawnOptions passes an absolute PI_CODING_AGENT_DIR to the broker
 });
 
 test("isBrokerHealthOkMessage requires the intercom protocol marker", () => {
-  assert.equal(isBrokerHealthOkMessage({ type: "health_ok", requestId: "req-1", protocol: "pi-intercom", version: 2 }, "req-1"), true);
+  assert.equal(isBrokerHealthOkMessage({ type: "health_ok", requestId: "req-1", protocol: "pi-intercom", version: 3 }, "req-1"), true);
   assert.equal(isBrokerHealthOkMessage({ type: "health_ok", requestId: "req-1" }, "req-1"), false);
-  assert.equal(isBrokerHealthOkMessage({ type: "health_ok", requestId: "req-2", protocol: "pi-intercom", version: 2 }, "req-1"), false);
+  assert.equal(isBrokerHealthOkMessage({ type: "health_ok", requestId: "req-2", protocol: "pi-intercom", version: 3 }, "req-1"), false);
   assert.equal(isBrokerHealthOkMessage("ok", "req-1"), false);
+});
+
+test("stopBrokerProcess terminates an incompatible broker PID", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "pi-intercom-stop-broker-"));
+  const pidFile = path.join(root, "broker.pid");
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  try {
+    await once(child, "spawn");
+    writeFileSync(pidFile, String(child.pid));
+    const exited = once(child, "exit");
+    await stopBrokerProcess(pidFile, 2000);
+    await exited;
+    assert.notEqual(child.signalCode, null);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    rmSync(root, { recursive: true, force: true });
+  }
 });

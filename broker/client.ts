@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
+import { PersistentOutboundOutbox } from "../outbound-outbox.ts";
 import {
   getBrokerConnectTarget,
   INTERCOM_PROTOCOL_NAME,
@@ -141,6 +142,8 @@ export class IntercomClient extends EventEmitter {
     reject: (e: Error) => void;
   }>();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
+  private pendingAskControls = new Map<string, { resolve: (applied: boolean) => void; timeout: NodeJS.Timeout }>();
+  private outbox: PersistentOutboundOutbox | null = null;
   private disconnecting = false;
   private disconnectError: Error | null = null;
 
@@ -153,10 +156,19 @@ export class IntercomClient extends EventEmitter {
       pending.reject(error);
     }
     this.pendingLists.clear();
+    for (const pending of this.pendingAskControls.values()) {
+      clearTimeout(pending.timeout);
+      pending.resolve(false);
+    }
+    this.pendingAskControls.clear();
   }
 
   get sessionId(): string | null {
     return this._sessionId;
+  }
+
+  get outboxSize(): number {
+    return this.outbox?.list().length ?? 0;
   }
 
   isConnected(): boolean {
@@ -340,6 +352,8 @@ export class IntercomClient extends EventEmitter {
         }
 
         this._sessionId = brokerMessage.sessionId;
+        this.outbox = new PersistentOutboundOutbox(brokerMessage.sessionId);
+        this.replayOutbox();
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -393,9 +407,10 @@ export class IntercomClient extends EventEmitter {
           throw new Error("Invalid delivered message");
         }
 
+        this.outbox?.remove(messageId);
         const pending = this.pendingSends.get(messageId);
         if (!pending) {
-          // Late send responses are harmless once the caller has already timed out.
+          this.emit("outbox_delivered", messageId, deliveryId);
           return;
         }
 
@@ -415,9 +430,10 @@ export class IntercomClient extends EventEmitter {
           throw new Error("Invalid delivery_failed message");
         }
 
+        this.outbox?.remove(messageId);
         const pending = this.pendingSends.get(messageId);
         if (!pending) {
-          // Late send responses are harmless once the caller has already timed out.
+          this.emit("outbox_failed", messageId, code, reason);
           return;
         }
 
@@ -448,6 +464,24 @@ export class IntercomClient extends EventEmitter {
           throw new Error("Invalid ask_cancelled message");
         }
         this.emit("ask_cancelled", messageId, fromSessionId, reason as AskCancellationReason);
+        break;
+      }
+
+      case "ask_control_result": {
+        const { action, applied, messageId, requestId } = brokerMessage;
+        if (
+          (action !== "defer" && action !== "cancel")
+          || typeof applied !== "boolean"
+          || typeof messageId !== "string"
+          || typeof requestId !== "string"
+        ) {
+          throw new Error("Invalid ask_control_result message");
+        }
+        const pending = this.pendingAskControls.get(requestId);
+        if (!pending) return;
+        clearTimeout(pending.timeout);
+        this.pendingAskControls.delete(requestId);
+        pending.resolve(applied);
         break;
       }
 
@@ -508,6 +542,7 @@ export class IntercomClient extends EventEmitter {
     this.disconnecting = true;
     this.disconnectError = null;
     this.failPending(new Error("Client disconnected"));
+    if (!preserveAsks) this.outbox?.clear();
 
     await new Promise<void>((resolve) => {
       let settled = false;
@@ -606,6 +641,12 @@ export class IntercomClient extends EventEmitter {
       },
     };
 
+    try {
+      this.outbox?.enqueue(to, message);
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+
     return new Promise((resolve, reject) => {
       const wrappedResolve = (result: SendResult) => {
         clearTimeout(timeout);
@@ -641,12 +682,33 @@ export class IntercomClient extends EventEmitter {
     return this.writeControlMessage({ type: "message_received", deliveryId });
   }
 
-  deferAsk(messageId: string): boolean {
-    return this.writeControlMessage({ type: "defer_ask", messageId });
+  rejectMessage(deliveryId: string, reason: string): boolean {
+    return this.writeControlMessage({ type: "message_rejected", deliveryId, code: "CONFLICTING_MESSAGE_ID", reason });
   }
 
-  cancelAsk(messageId: string): boolean {
-    return this.writeControlMessage({ type: "cancel_ask", messageId });
+  deferAsk(messageId: string): Promise<boolean> {
+    return this.sendAskControl("defer", messageId);
+  }
+
+  cancelAsk(messageId: string): Promise<boolean> {
+    return this.sendAskControl("cancel", messageId);
+  }
+
+  private sendAskControl(action: "defer" | "cancel", messageId: string): Promise<boolean> {
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.pendingAskControls.delete(requestId);
+        resolve(false);
+      }, 2000);
+      timeout.unref?.();
+      this.pendingAskControls.set(requestId, { resolve, timeout });
+      if (!this.writeControlMessage({ type: action === "defer" ? "defer_ask" : "cancel_ask", requestId, messageId })) {
+        clearTimeout(timeout);
+        this.pendingAskControls.delete(requestId);
+        resolve(false);
+      }
+    });
   }
 
   private writeControlMessage(message: Record<string, unknown>): boolean {
@@ -665,6 +727,19 @@ export class IntercomClient extends EventEmitter {
     } catch {
       // Control messages are best-effort; local cleanup must still proceed.
       return false;
+    }
+  }
+
+  private replayOutbox(): void {
+    const socket = this.socket;
+    if (!socket || !this._sessionId || socket.destroyed || socket.writableEnded || !socket.writable) return;
+    for (const entry of this.outbox?.list() ?? []) {
+      if (this.pendingSends.has(entry.message.id)) continue;
+      try {
+        writeMessage(socket, { type: "send", to: entry.to, message: entry.message });
+      } catch {
+        return;
+      }
     }
   }
 

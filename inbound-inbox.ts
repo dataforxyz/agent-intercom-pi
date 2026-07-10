@@ -1,23 +1,19 @@
-import { createHash, randomUUID } from "crypto";
+import { createHash } from "crypto";
 import {
   chmodSync,
-  closeSync,
   existsSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
-  writeFileSync,
 } from "fs";
 import { join } from "path";
 import {
   ensureIntercomRuntimeDir,
   getIntercomDirPath,
   INTERCOM_DIR_MODE,
-  INTERCOM_RUNTIME_FILE_MODE,
   restrictIntercomRuntimeFile,
 } from "./broker/paths.ts";
+import { writeDurableJson } from "./durable-json.ts";
 import type { Message, SessionInfo } from "./types.ts";
 
 const INBOX_STATE_VERSION = 3;
@@ -43,6 +39,13 @@ interface InboxState {
 export interface EnqueueResult {
   duplicate: boolean;
   entry: StoredInboundMessage;
+}
+
+export class InboundMessageConflictError extends Error {
+  constructor(readonly messageId: string) {
+    super(`Conflicting payload for reused message ID "${messageId}"`);
+    this.name = "InboundMessageConflictError";
+  }
 }
 
 function messageKey(from: SessionInfo, message: Message): string {
@@ -128,7 +131,6 @@ function sessionInboxFileName(sessionId: string): string {
 }
 
 export class PersistentInboundInbox {
-  private readonly inboxDir: string;
   private readonly filePath: string;
   private state: InboxState;
   private readonly seen = new Set<string>();
@@ -138,7 +140,6 @@ export class PersistentInboundInbox {
     const inboxDir = join(intercomDir, "inbox");
     mkdirSync(inboxDir, { recursive: true, mode: INTERCOM_DIR_MODE });
     if (process.platform !== "win32") chmodSync(inboxDir, INTERCOM_DIR_MODE);
-    this.inboxDir = inboxDir;
     this.filePath = join(inboxDir, sessionInboxFileName(sessionId));
     this.state = this.loadState();
     for (const key of this.state.seen) this.seen.add(key);
@@ -162,7 +163,7 @@ export class PersistentInboundInbox {
     const existing = this.state.entries.find((entry) => entry.key === key);
     if (existing) {
       if (messageFingerprint(existing.message) !== fingerprint) {
-        throw new Error(`Conflicting payload for reused message ID "${message.id}"`);
+        throw new InboundMessageConflictError(message.id);
       }
       return { duplicate: true, entry: { ...existing } };
     }
@@ -170,7 +171,7 @@ export class PersistentInboundInbox {
     if (this.seen.has(key)) {
       const previousFingerprint = this.state.fingerprints[key];
       if (previousFingerprint !== undefined && previousFingerprint !== fingerprint) {
-        throw new Error(`Conflicting payload for reused message ID "${message.id}"`);
+        throw new InboundMessageConflictError(message.id);
       }
       if (previousFingerprint === undefined) {
         this.state.fingerprints[key] = fingerprint;
@@ -262,23 +263,6 @@ export class PersistentInboundInbox {
   }
 
   private persist(): void {
-    const tempPath = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
-    writeFileSync(tempPath, JSON.stringify(this.state), { encoding: "utf-8", mode: INTERCOM_RUNTIME_FILE_MODE });
-    const fd = openSync(tempPath, "r");
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(tempPath, this.filePath);
-    restrictIntercomRuntimeFile(this.filePath);
-    if (process.platform !== "win32") {
-      const dirFd = openSync(this.inboxDir, "r");
-      try {
-        fsyncSync(dirFd);
-      } finally {
-        closeSync(dirFd);
-      }
-    }
+    writeDurableJson(this.filePath, this.state);
   }
 }

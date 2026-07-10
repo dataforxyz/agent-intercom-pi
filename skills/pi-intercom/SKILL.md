@@ -334,6 +334,7 @@ if (result.isError && result.content[0].text.includes("Already waiting")) {
 
 - **No reply wait**: `send` waits only until the receiver durably queues and acknowledges the message; it never waits for a conversational reply
 - **Structured delivery**: `accepted` means broker-accepted, while `delivered` means receiver-acknowledged
+- **Crash replay**: Unfinished sends are durably replayed with the same message ID after broker reconnect, so do not invent a new ID for a manual retry
 - **Burst batching**: Nearby inbound messages become one recipient turn after 300 ms quiet, capped at 1 second
 - **Confirmation dialogs**: If `confirmSend: true` in config, interactive sessions show a confirmation dialog
 - **Replies skip confirmation**: Messages with `replyTo` never show confirmation dialogs

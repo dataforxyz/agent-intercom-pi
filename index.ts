@@ -13,7 +13,7 @@ import { sanitizeDisplayText, shortestUniqueIdPrefixes } from "./ui/session-iden
 import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
-import { PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
+import { InboundMessageConflictError, PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -707,7 +707,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const activeToolName = activeTools.values().next().value;
     const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : agentRunning ? "thinking" : "idle";
     const queueStatus = inboundInbox?.size ? ` · inbox:${inboundInbox.size}` : "";
-    return config.status ? `${lifecycleStatus}${queueStatus} · ${config.status}` : `${lifecycleStatus}${queueStatus}`;
+    const outboxStatus = client?.outboxSize ? ` · outbox:${client.outboxSize}` : "";
+    return config.status ? `${lifecycleStatus}${queueStatus}${outboxStatus} · ${config.status}` : `${lifecycleStatus}${queueStatus}${outboxStatus}`;
   }
   function buildRegistration(): Omit<SessionInfo, "id"> {
     const liveContext = getLiveContext();
@@ -907,6 +908,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     try {
       enqueued = inboxAtReceive.enqueue(from, message);
     } catch (error) {
+      if (error instanceof InboundMessageConflictError) {
+        receivingClient.rejectMessage(deliveryId, error.message);
+      }
       pi.appendEntry("intercom_inbox_persist_error", {
         from: from.id,
         messageId: message.id,
@@ -952,17 +956,25 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         });
       });
     });
-    nextClient.on("ask_deferred", (messageId: string) => {
-      replyTracker.markDeferred(messageId);
+    nextClient.on("ask_deferred", (messageId: string, fromSessionId: string) => {
+      replyTracker.markDeferred(messageId, fromSessionId);
     });
     nextClient.on("ask_cancelled", (messageId: string, fromSessionId: string) => {
-      replyTracker.dismissPendingAsk(messageId);
+      replyTracker.dismissPendingAsk(messageId, fromSessionId);
       inboundInbox?.dismissPendingAsk(messageId, fromSessionId);
       const cancelledKeys = (inboundInbox?.list() ?? [])
         .filter((entry) => entry.from.id === fromSessionId && entry.message.id === messageId)
         .map((entry) => entry.key);
       inboundInbox?.consume(cancelledKeys);
       refreshInboundBatchWindow();
+      syncPresenceStatus();
+    });
+    nextClient.on("outbox_delivered", (messageId: string, deliveryId: string) => {
+      pi.appendEntry("intercom_outbox_delivered", { messageId, deliveryId, timestamp: Date.now() });
+      syncPresenceStatus();
+    });
+    nextClient.on("outbox_failed", (messageId: string, code: string, reason: string) => {
+      pi.appendEntry("intercom_outbox_failed", { messageId, code, reason, timestamp: Date.now() });
       syncPresenceStatus();
     });
     nextClient.on("disconnected", (error: Error) => {
@@ -1515,7 +1527,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         let replyPromise: Promise<Message> | null = null;
         try {
           const questionId = randomUUID();
-          replyPromise = waitForReply(sendTo, questionId, signal, () => connectedClient.cancelAsk(questionId));
+          replyPromise = waitForReply(sendTo, questionId, signal, () => { void connectedClient.cancelAsk(questionId); });
           replyPromise.catch(() => undefined);
           if (signal?.aborted) {
             rejectReplyWaiter(new Error("Cancelled"));
@@ -1586,7 +1598,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           };
         } catch (error) {
           if (error instanceof AskWaitElapsedError) {
-            return deferredAskResult(metadata.orchestratorTarget, error, connectedClient.deferAsk(error.replyTo));
+            return deferredAskResult(metadata.orchestratorTarget, error, await connectedClient.deferAsk(error.replyTo));
           }
           rejectReplyWaiter(toError(error));
           if (replyPromise) {
@@ -1770,8 +1782,8 @@ Usage:
               timestamp: Date.now(),
             });
             if (replyTo) {
-              replyTracker.markReplied(replyTo);
-              inboundInbox?.dismissPendingAsk(replyTo);
+              replyTracker.markReplied(replyTo, sendTo);
+              inboundInbox?.dismissPendingAsk(replyTo, sendTo);
             }
             return {
               content: [{ type: "text", text: `Message sent to ${to}` }],
@@ -1829,7 +1841,7 @@ Usage:
               };
             }
             const questionId = randomUUID();
-            replyPromise = waitForReply(sendTo, questionId, _signal, () => connectedClient.cancelAsk(questionId));
+            replyPromise = waitForReply(sendTo, questionId, _signal, () => { void connectedClient.cancelAsk(questionId); });
             replyPromise.catch(() => undefined);
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
@@ -1877,7 +1889,7 @@ Usage:
             };
           } catch (error) {
             if (error instanceof AskWaitElapsedError) {
-              return deferredAskResult(to, error, connectedClient.deferAsk(error.replyTo));
+              return deferredAskResult(to, error, await connectedClient.deferAsk(error.replyTo));
             }
             rejectReplyWaiter(toError(error));
             if (replyPromise) {
@@ -1918,7 +1930,7 @@ Usage:
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               if (threadedReplyTo && result.code === "INVALID_REPLY_TARGET") {
-                replyTracker.dismissPendingAsk(target.message.id);
+                replyTracker.dismissPendingAsk(target.message.id, target.from.id);
                 inboundInbox?.dismissPendingAsk(target.message.id, target.from.id);
               }
               return {
@@ -1927,7 +1939,7 @@ Usage:
               };
             }
             if (threadedReplyTo) {
-              replyTracker.markReplied(threadedReplyTo);
+              replyTracker.markReplied(threadedReplyTo, target.from.id);
               inboundInbox?.dismissPendingAsk(threadedReplyTo, target.from.id);
             }
             pi.appendEntry("intercom_sent", {
@@ -1978,7 +1990,7 @@ Usage:
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nActive sessions: ${sessions.length}\nQueued inbound messages: ${inboundInbox?.size ?? 0}\nPending inbound asks: ${replyTracker.listPending().length}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nActive sessions: ${sessions.length}\nQueued inbound messages: ${inboundInbox?.size ?? 0}\nQueued outbound messages: ${connectedClient.outboxSize}\nPending inbound asks: ${replyTracker.listPending().length}`,
               }],
               details: {},
             };

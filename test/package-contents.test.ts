@@ -13,5 +13,7 @@ test("published package includes presentation assets and excludes tests", () => 
   assert.ok(paths.includes("banner.png"));
   assert.ok(paths.includes("broker/broker.ts"));
   assert.ok(paths.includes("inbound-inbox.ts"));
+  assert.ok(paths.includes("outbound-outbox.ts"));
+  assert.ok(paths.includes("durable-json.ts"));
   assert.equal(paths.some(path => path.endsWith(".test.ts")), false);
 });

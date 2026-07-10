@@ -1,5 +1,5 @@
 import net from "net";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
@@ -16,6 +16,7 @@ import {
   type BrokerConnectTarget,
 } from "./paths.ts";
 import { getAskTimeoutMs } from "../config.ts";
+import { writeDurableJson } from "../durable-json.ts";
 import type {
   AskCancellationReason,
   BrokerErrorCode,
@@ -709,19 +710,45 @@ class IntercomBroker {
         break;
       }
 
+      case "message_rejected": {
+        if (!currentId) {
+          throw new Error("Received message_rejected before register");
+        }
+        if (
+          typeof clientMessage.deliveryId !== "string"
+          || clientMessage.code !== "CONFLICTING_MESSAGE_ID"
+          || typeof clientMessage.reason !== "string"
+          || clientMessage.reason.length > 1024
+        ) {
+          throw new Error("Invalid message_rejected message");
+        }
+        const pending = this.pendingDeliveries.get(clientMessage.deliveryId);
+        if (pending?.to === currentId && pending.recipientSocket === socket) {
+          this.failPendingDelivery(clientMessage.deliveryId, clientMessage.code, clientMessage.reason);
+        }
+        break;
+      }
+
       case "defer_ask": {
         if (!currentId) {
           throw new Error("Received defer_ask before register");
         }
-        if (typeof clientMessage.messageId !== "string") {
+        if (
+          typeof clientMessage.messageId !== "string"
+          || clientMessage.messageId.length > MAX_MESSAGE_ID_LENGTH
+          || typeof clientMessage.requestId !== "string"
+          || clientMessage.requestId.length > MAX_MESSAGE_ID_LENGTH
+        ) {
           throw new Error("Invalid defer_ask message");
         }
         const edge = this.askEdges.get(this.askKey(currentId, clientMessage.messageId));
-        if (edge?.from === currentId && edge.state === "blocking") {
+        const applied = Boolean(edge?.from === currentId);
+        if (applied && edge.state === "blocking") {
           edge.state = "deferred";
           this.persistAskEdges();
           this.notifyAskDeferred(edge);
         }
+        writeMessage(socket, { type: "ask_control_result", requestId: clientMessage.requestId, action: "defer", messageId: clientMessage.messageId, applied });
         break;
       }
 
@@ -729,15 +756,22 @@ class IntercomBroker {
         if (!currentId) {
           throw new Error("Received cancel_ask before register");
         }
-        if (typeof clientMessage.messageId !== "string") {
+        if (
+          typeof clientMessage.messageId !== "string"
+          || clientMessage.messageId.length > MAX_MESSAGE_ID_LENGTH
+          || typeof clientMessage.requestId !== "string"
+          || clientMessage.requestId.length > MAX_MESSAGE_ID_LENGTH
+        ) {
           throw new Error("Invalid cancel_ask message");
         }
         const session = this.sessions.get(currentId);
         const edgeKey = this.askKey(currentId, clientMessage.messageId);
         const edge = this.askEdges.get(edgeKey);
-        if (session?.socket === socket && edge?.from === currentId) {
+        const applied = Boolean(session?.socket === socket && edge?.from === currentId);
+        if (applied) {
           this.removeAskEdge(edgeKey, "cancelled", true);
         }
+        writeMessage(socket, { type: "ask_control_result", requestId: clientMessage.requestId, action: "cancel", messageId: clientMessage.messageId, applied });
         break;
       }
 
@@ -984,25 +1018,7 @@ class IntercomBroker {
       expiresAt: edge.expiresAt,
       state: edge.state,
     }));
-    const temporaryPath = `${ASK_STATE_PATH}.${process.pid}.tmp`;
-    writeFileSync(temporaryPath, `${JSON.stringify({ version: 1, edges })}\n`, { mode: INTERCOM_RUNTIME_FILE_MODE });
-    restrictIntercomRuntimeFile(temporaryPath);
-    const fileDescriptor = openSync(temporaryPath, "r");
-    try {
-      fsyncSync(fileDescriptor);
-    } finally {
-      closeSync(fileDescriptor);
-    }
-    renameSync(temporaryPath, ASK_STATE_PATH);
-    restrictIntercomRuntimeFile(ASK_STATE_PATH);
-    if (process.platform !== "win32") {
-      const directoryDescriptor = openSync(INTERCOM_DIR, "r");
-      try {
-        fsyncSync(directoryDescriptor);
-      } finally {
-        closeSync(directoryDescriptor);
-      }
-    }
+    writeDurableJson(ASK_STATE_PATH, { version: 1, edges });
   }
 
   private countAskEdgesFrom(sessionId: string): number {

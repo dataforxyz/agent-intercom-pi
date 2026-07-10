@@ -193,6 +193,9 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
     if (await isBrokerRunning()) {
       return;
     }
+    if (await checkBrokerHealth() === "incompatible") {
+      await stopBrokerProcess();
+    }
 
     const brokerPath = join(dirname(fileURLToPath(import.meta.url)), "broker.ts");
     const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
@@ -240,6 +243,32 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
   }
 }
 
+export async function stopBrokerProcess(pidFile = BROKER_PID, timeoutMs = 3000): Promise<void> {
+  if (!existsSync(pidFile)) return;
+  let pid: number;
+  try {
+    pid = Number.parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+  } catch {
+    return;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      process.kill(pid, 0);
+      await sleep(50);
+    } catch {
+      return;
+    }
+  }
+  throw new Error(`Incompatible intercom broker ${pid} did not stop within ${timeoutMs}ms`);
+}
+
 async function isBrokerRunning(): Promise<boolean> {
   if (await checkSocketConnectable()) {
     return true;
@@ -264,13 +293,19 @@ function connectToBrokerTarget(target: BrokerConnectTarget): net.Socket {
     : net.connect({ host: target.host, port: target.port });
 }
 
-function checkSocketConnectable(): Promise<boolean> {
+type BrokerHealth = "compatible" | "incompatible" | "unreachable";
+
+async function checkSocketConnectable(): Promise<boolean> {
+  return await checkBrokerHealth() === "compatible";
+}
+
+function checkBrokerHealth(): Promise<BrokerHealth> {
   return new Promise((resolve) => {
     let target: BrokerConnectTarget;
     try {
       target = getBrokerConnectTarget();
     } catch {
-      resolve(false);
+      resolve("unreachable");
       return;
     }
 
@@ -278,7 +313,7 @@ function checkSocketConnectable(): Promise<boolean> {
     const requestId = randomUUID();
     const expectedStateId = typeof target === "string" ? undefined : target.stateId;
     let settled = false;
-    const finish = (isConnected: boolean) => {
+    const finish = (health: BrokerHealth) => {
       if (settled) {
         return;
       }
@@ -288,7 +323,7 @@ function checkSocketConnectable(): Promise<boolean> {
       socket.off("error", onError);
       socket.off("data", reader);
       socket.destroy();
-      resolve(isConnected);
+      resolve(health);
     };
     const onConnect = () => {
       try {
@@ -298,17 +333,32 @@ function checkSocketConnectable(): Promise<boolean> {
           ...(expectedStateId ? { stateId: expectedStateId } : {}),
         });
       } catch {
-        finish(false);
+        finish("unreachable");
       }
     };
-    const onError = () => finish(false);
+    const onError = () => finish("unreachable");
     const reader = createMessageReader((message) => {
-      finish(isBrokerHealthOkMessage(message, requestId));
-    }, () => finish(false));
+      if (isBrokerHealthOkMessage(message, requestId)) {
+        finish("compatible");
+        return;
+      }
+      if (
+        typeof message === "object"
+        && message !== null
+        && "type" in message
+        && message.type === "health_ok"
+        && "requestId" in message
+        && message.requestId === requestId
+      ) {
+        finish("incompatible");
+        return;
+      }
+      finish("unreachable");
+    }, () => finish("unreachable"));
     socket.on("connect", onConnect);
     socket.on("error", onError);
     socket.on("data", reader);
-    const timeout = setTimeout(() => finish(false), 1000);
+    const timeout = setTimeout(() => finish("unreachable"), 1000);
   });
 }
 

@@ -321,7 +321,7 @@ async function connectRawRegistered(sessionId: string, name: string, sessionOver
   writeMessage(socket, {
     type: "register",
     protocol: "pi-intercom",
-    version: 2,
+    version: 3,
     sessionId,
     session: {
       name,
@@ -427,7 +427,7 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
       type: "health_ok",
       requestId: "authorized-health",
       protocol: "pi-intercom",
-      version: 2,
+      version: 3,
     }]);
 
     const mismatchMessages = await exchange({
@@ -448,13 +448,13 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
     assert.deepEqual(mismatchMessages, [{
       type: "error",
       code: "PROTOCOL_MISMATCH",
-      error: "Unsupported intercom protocol; expected pi-intercom v2",
+      error: "Unsupported intercom protocol; expected pi-intercom v3",
     }]);
 
     const registerMessages = await exchange({
       type: "register",
       protocol: "pi-intercom",
-      version: 2,
+      version: 3,
       sessionId: "authorized-tcp-client",
       stateId,
       session: {
@@ -470,7 +470,7 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
       type: "registered",
       sessionId: "authorized-tcp-client",
       protocol: "pi-intercom",
-      version: 2,
+      version: 3,
     }]);
   } finally {
     if (broker.exitCode === null && broker.signalCode === null) {
@@ -882,7 +882,7 @@ test("stable-ID replacement defers old ask edges and ignores stale cancels", { c
       expectsReply: true,
     });
     assert.equal(replacementAsk.delivered, true);
-    first.writeMessage(first.socket, { type: "cancel_ask", messageId: "replacement-ask-edge" });
+    first.writeMessage(first.socket, { type: "cancel_ask", requestId: "stale-cancel", messageId: "replacement-ask-edge" });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     const reverseWhileReplacementWaits = await orchestrator.send("replaceable-asker-id", {
@@ -2025,6 +2025,104 @@ test("recipient disconnect fails an accepted unacknowledged delivery", { concurr
   }
 });
 
+test("receiver rejection returns an immediate structured delivery failure", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  const receiver = new IntercomClient();
+  receiver.on("message", (_from, _message, deliveryId: string) => {
+    receiver.rejectMessage(deliveryId, "Conflicting durable message identity");
+  });
+
+  try {
+    await receiver.connect({
+      name: "rejecting-receiver",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    });
+    const result = await planner.send(receiver.sessionId!, {
+      messageId: "receiver-rejected-message",
+      text: "Conflicting message",
+    });
+    assert.equal(result.accepted, true);
+    assert.equal(result.delivered, false);
+    assert.equal(result.code, "CONFLICTING_MESSAGE_ID");
+    assert.match(result.reason ?? "", /Conflicting durable message identity/);
+  } finally {
+    await receiver.disconnect().catch(() => undefined);
+    await cleanup();
+  }
+});
+
+test("durable sender outbox replays an accepted message after broker crash", { concurrency: false }, async () => {
+  const agentDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-outbox-agent-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const spawnBroker = () => spawn(process.execPath, ["--import", "tsx", path.join(repoDir, "broker", "broker.ts")], {
+    cwd: repoDir,
+    env: { ...process.env, HOME: sharedHomeDir, USERPROFILE: sharedHomeDir, PI_CODING_AGENT_DIR: agentDir },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let broker = spawnBroker();
+  let sender = new IntercomClient();
+  let receiver = new IntercomClient();
+  sender.on("error", () => undefined);
+  receiver.on("error", () => undefined);
+  const within = async <T>(label: string, promise: Promise<T>, timeoutMs = 5000): Promise<T> => await new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Timed out: ${label}`)), timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timeout); resolve(value); },
+      (error) => { clearTimeout(timeout); reject(error); },
+    );
+  });
+
+  try {
+    await within("first broker ready", waitForBrokerReady(broker));
+    await within("first sender connect", sender.connect({ name: "outbox-sender", cwd: repoDir, model: "test-model", pid: process.pid, startedAt: Date.now(), lastActivity: Date.now() }, "outbox-sender-id"));
+    await within("first receiver connect", receiver.connect({ name: "outbox-receiver", cwd: repoDir, model: "test-model", pid: process.pid, startedAt: Date.now(), lastActivity: Date.now() }, "outbox-receiver-id"));
+
+    const accepted = once(sender, "delivery_accepted");
+    const pendingSend = sender.send("outbox-receiver-id", {
+      messageId: "crash-replay-message",
+      text: "Survive the broker crash.",
+    });
+    pendingSend.catch(() => undefined);
+    await within("delivery accepted", accepted);
+    const senderDisconnected = once(sender, "disconnected");
+    const receiverDisconnected = once(receiver, "disconnected");
+    broker.kill("SIGKILL");
+    await within("first broker exit", once(broker, "exit"));
+    await within("clients disconnected", Promise.all([senderDisconnected, receiverDisconnected]));
+    await assert.rejects(pendingSend, /disconnect/i);
+
+    broker = spawnBroker();
+    await within("second broker ready", waitForBrokerReady(broker));
+    receiver = createAcknowledgingClient();
+    let receivedCount = 0;
+    receiver.on("message", () => { receivedCount += 1; });
+    await within("second receiver connect", receiver.connect({ name: "outbox-receiver", cwd: repoDir, model: "test-model", pid: process.pid, startedAt: Date.now(), lastActivity: Date.now() }, "outbox-receiver-id"));
+
+    sender = new IntercomClient();
+    sender.on("error", () => undefined);
+    const replayDelivered = once(sender, "outbox_delivered");
+    await within("second sender connect", sender.connect({ name: "outbox-sender", cwd: repoDir, model: "test-model", pid: process.pid, startedAt: Date.now(), lastActivity: Date.now() }, "outbox-sender-id"));
+    const [messageId] = await within("outbox replay delivered", replayDelivered);
+    assert.equal(messageId, "crash-replay-message");
+    assert.equal(receivedCount, 1);
+  } finally {
+    await sender.disconnect().catch(() => undefined);
+    await receiver.disconnect().catch(() => undefined);
+    if (broker.exitCode === null && broker.signalCode === null) {
+      broker.kill("SIGTERM");
+      await once(broker, "exit").catch(() => undefined);
+    }
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
 test("broker bounds outstanding unacknowledged deliveries per sender", { concurrency: false }, async () => {
   const { planner, cleanup } = await setupClients();
   const receiver = new IntercomClient();
@@ -2080,7 +2178,7 @@ test("deferred asks allow reverse asks, remain replyable, and notify cancellatio
     assert.equal(ask.delivered, true);
 
     const deferredEvent = once(orchestrator, "ask_deferred");
-    assert.equal(planner.deferAsk("deferred-ask"), true);
+    assert.equal(await planner.deferAsk("deferred-ask"), true);
     assert.deepEqual(await deferredEvent, ["deferred-ask", planner.sessionId]);
 
     const reverse = await orchestrator.send(planner.sessionId!, {
@@ -2116,7 +2214,7 @@ test("deferred asks allow reverse asks, remain replyable, and notify cancellatio
     });
     assert.equal(secondAsk.delivered, true);
     const cancelledEvent = once(orchestrator, "ask_cancelled");
-    assert.equal(planner.cancelAsk("cancel-notification-ask"), true);
+    assert.equal(await planner.cancelAsk("cancel-notification-ask"), true);
     assert.deepEqual(await cancelledEvent, ["cancel-notification-ask", planner.sessionId, "cancelled"]);
   } finally {
     await cleanup();
@@ -2162,7 +2260,7 @@ test("deferred asks remain replyable after a broker restart", { concurrency: fal
       expectsReply: true,
     });
     assert.equal(ask.delivered, true);
-    assert.equal(planner.deferAsk("restart-deferred-ask"), true);
+    assert.equal(await planner.deferAsk("restart-deferred-ask"), true);
 
     const plannerDisconnected = once(planner, "disconnected");
     const orchestratorDisconnected = once(orchestrator, "disconnected");
