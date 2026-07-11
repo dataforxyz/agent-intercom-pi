@@ -13,6 +13,10 @@
 | Claude Code | [`agent-intercom-claude`](https://github.com/dataforxyz/agent-intercom-claude) |
 | OpenCode | [`agent-intercom-opencode`](https://github.com/dataforxyz/agent-intercom-opencode) |
 
+## Origin and thanks
+
+Agent Intercom grew from [Nico Bailon's original `pi-intercom`](https://github.com/nicobailon/pi-intercom). A sincere thank you to Nico and the original contributors for creating the Pi extension and the foundation this cross-harness family builds on.
+
 This repository contains the native Pi adapter. It provides direct 1:1 messaging, overlays, keyboard shortcuts, and agent tools while interoperating with Codex, Claude Code, and OpenCode sessions on the same machine.
 
 ```text
