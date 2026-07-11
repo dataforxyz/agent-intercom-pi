@@ -4,7 +4,16 @@
 
 # Pi Intercom
 
-Direct 1:1 messaging between pi sessions on the same machine. Send context, findings, or requests from one session to another — whether you're driving the conversation or letting agents coordinate.
+**Agent Intercom** is a cross-harness, same-machine messaging system for coding agents. Its Pi, Codex, Claude Code, and OpenCode adapters share one local broker and protocol, so sessions can discover and message each other regardless of which harness they run in.
+
+| Harness | Repository |
+|---|---|
+| Pi | [`agent-intercom-pi`](https://github.com/dataforxyz/agent-intercom-pi) |
+| Codex | [`agent-intercom-codex`](https://github.com/dataforxyz/agent-intercom-codex) |
+| Claude Code | [`agent-intercom-claude`](https://github.com/dataforxyz/agent-intercom-claude) |
+| OpenCode | [`agent-intercom-opencode`](https://github.com/dataforxyz/agent-intercom-opencode) |
+
+This repository contains the native Pi adapter. It provides direct 1:1 messaging, overlays, keyboard shortcuts, and agent tools while interoperating with Codex, Claude Code, and OpenCode sessions on the same machine.
 
 ```text
 User flow: press Alt+M or run /intercom to pick a session and send a message
@@ -42,7 +51,7 @@ Pi-intercom is also protocol-compatible with the companion Codex, Claude, and Op
 
 ```xml
 <pi-intercom>
-Coordinate with other local pi sessions on related codebases. Use `/skill:pi-intercom` for patterns.
+Coordinate with other local Agent Intercom sessions across Pi, Codex, Claude Code, and OpenCode. Use `/skill:pi-intercom` for patterns.
 
 **When:** Same codebase (parallel work), reference codebase (consulting patterns), related repos (shared libraries).
 
