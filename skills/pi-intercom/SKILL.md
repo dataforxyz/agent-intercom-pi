@@ -38,8 +38,7 @@ The most common pattern. One session holds the big picture, others do hands-on w
 
 **Planner delegates a task** (fire-and-forget):
 ```typescript
-intercom({
-  action: "send",
+intercom_send({
   to: "worker",
   message: "Task-3: Add retry logic to API client. Key files: src/api/client.ts. Ask if anything's unclear."
 })
@@ -47,8 +46,7 @@ intercom({
 
 **Worker asks for clarification** (waits briefly, then continues asynchronously if needed):
 ```typescript
-intercom({
-  action: "ask",
+intercom_ask({
   to: "planner",
   message: "Should I use exponential backoff or fixed intervals?"
 })
@@ -58,8 +56,7 @@ intercom({
 
 **Worker reports completion**:
 ```typescript
-intercom({
-  action: "send",
+intercom_send({
   to: "planner",
   message: "Task-3 complete. Added exponential backoff (100ms → 1600ms, max 5 retries)."
 })
@@ -72,9 +69,9 @@ Use `ask` only when the next step genuinely depends on an answer. Completion and
 The receiver durably queues every message and combines messages that arrive within a 300 ms quiet window into one model turn (never waiting more than 1 second). This means several independently produced updates can be sent promptly without waking the recipient once per message:
 
 ```typescript
-intercom({ action: "send", to: "planner", message: "Tests pass." })
-intercom({ action: "send", to: "planner", message: "One API compatibility concern remains." })
-intercom({ action: "send", to: "planner", message: "See src/client.ts:88." })
+intercom_send({ to: "planner", message: "Tests pass." })
+intercom_send({ to: "planner", message: "One API compatibility concern remains." })
+intercom_send({ to: "planner", message: "See src/client.ts:88." })
 ```
 
 Do not add artificial sleeps to form a batch. Each original message keeps its sender, ID, attachments, timestamp, and reply context.
@@ -84,7 +81,7 @@ Do not add artificial sleeps to form a batch. Each original message keeps its se
 Before sending, verify who's connected:
 
 ```typescript
-intercom({ action: "list" })
+intercom_list({})
 // → Shows all connected sessions with names, cwd, models, and live status (`idle`, `thinking`, `tool:<name>`)
 ```
 
@@ -94,17 +91,16 @@ When responding to an inbound ask, prefer `reply` instead of reconstructing raw 
 
 ```typescript
 // In the turn triggered by the ask:
-intercom({
-  action: "reply",
+intercom_reply({
   message: "Use exponential backoff starting at 100ms."
 })
 
 // If replying later and there might be more than one pending ask:
-intercom({ action: "pending" })
-intercom({ action: "reply", to: "planner", message: "Use exponential backoff starting at 100ms." })
+intercom_pending({})
+intercom_reply({ to: "planner", message: "Use exponential backoff starting at 100ms." })
 ```
 
-`reply` still preserves exact threading under the hood by sending the response with the original `replyTo` value.
+`intercom_reply` preserves exact threading internally; models never see or construct the protocol message ID.
 
 ### Pattern 5: Broadcast to Multiple Workers
 
@@ -116,7 +112,7 @@ const task = "Check for null pointer exceptions in your assigned files";
 
 // Fire-and-forget to all workers
 workers.forEach(w => 
-  intercom({ action: "send", to: w, message: task })
+  intercom_send({ to: w, message: task })
 );
 ```
 
@@ -125,8 +121,7 @@ workers.forEach(w =>
 Share code snippets, files, or context:
 
 ```typescript
-intercom({
-  action: "send",
+intercom_send({
   to: "worker",
   message: "Here's the fix for the auth issue:",
   attachments: [{
@@ -162,7 +157,7 @@ Which API should I use?
 
 ```typescript
 // The reply hint in the incoming message will show the exact call:
-intercom({ action: "reply", message: "Use the stable v2 API." })
+intercom_reply({ message: "Use the stable v2 API." })
 ```
 
 This works because `reply` resolves the correct sender and message ID automatically.
@@ -179,7 +174,7 @@ This works because `reply` resolves the correct sender and message ID automatica
 
 ```typescript
 // In the turn triggered by the incoming ask:
-intercom({ action: "reply", message: "Use exponential backoff, max 3 retries." })
+intercom_reply({ message: "Use exponential backoff, max 3 retries." })
 ```
 
 **When a subagent sends an interview request:**
@@ -187,8 +182,7 @@ intercom({ action: "reply", message: "Use exponential backoff, max 3 retries." }
 Read the rendered questions in the incoming message and reply with the exact ids in JSON. `info` questions are context-only and do not need response entries:
 
 ```typescript
-intercom({
-  action: "reply",
+intercom_reply({
   message: "```json\n{\n  \"responses\": [\n    { \"id\": \"api\", \"value\": \"Stable API\" },\n    { \"id\": \"constraints\", \"value\": \"Keep the public error shape unchanged.\" }\n  ]\n}\n```"
 })
 ```
@@ -196,15 +190,16 @@ intercom({
 **If you receive multiple pending asks from different subagents:**
 
 ```typescript
-intercom({ action: "pending" })
+intercom_pending({})
 // → Shows all unresolved inbound asks with sender, elapsed time, and preview
 
-intercom({ action: "reply", to: "subagent-worker-78f659a3-1", message: "Use the v2 API." })
+intercom_reply({ to: "subagent-worker-78f659a3-1", message: "Use the v2 API." })
 ```
 
 **Important:** Only sessions where `pi-subagents` supplied child bridge metadata
-get the `contact_supervisor` tool. Normal sessions use the regular `intercom`
-tool. If you see the formatted supervisor decision/progress update message, treat
+get the `contact_supervisor` tool. Normal sessions use the split `intercom_send`,
+`intercom_ask`, `intercom_reply`, `intercom_list`, `intercom_pending`, and
+`intercom_status` tools. If you see the formatted supervisor decision/progress update message, treat
 it as a `contact_supervisor` escalation.
 
 ## Key Differences
@@ -289,14 +284,12 @@ After launch, name the new session clearly so it is easy to target:
 Then coordinate from the current session:
 
 ```typescript
-intercom({
-  action: "send",
+intercom_send({
   to: "worker",
   message: "Take task X. Ask if blocked."
 })
 
-intercom({
-  action: "ask",
+intercom_ask({
   to: "reference-auth",
   message: "How does this repo structure token refresh retries?"
 })
@@ -324,7 +317,7 @@ If neither `cmux` nor `tmux` is available, skip this path and use normal `interc
 
 ```typescript
 // Check if already waiting before asking
-const result = await intercom({ action: "ask", to: "planner", message: "..." });
+const result = await intercom_ask({ to: "planner", message: "..." });
 if (result.isError && result.content[0].text.includes("Already waiting")) {
   // Use send instead, or wait for current ask to complete
 }
@@ -337,7 +330,7 @@ if (result.isError && result.content[0].text.includes("Already waiting")) {
 - **Crash replay**: Unfinished sends are durably replayed with the same message ID after broker reconnect, so do not invent a new ID for a manual retry
 - **Burst batching**: Nearby inbound messages become one recipient turn after 300 ms quiet, capped at 1 second
 - **Confirmation dialogs**: If `confirmSend: true` in config, interactive sessions show a confirmation dialog
-- **Replies skip confirmation**: Messages with `replyTo` never show confirmation dialogs
+- **Replies skip confirmation**: `intercom_reply` never shows a send confirmation dialog
 
 ## Best Practices
 
@@ -347,8 +340,7 @@ When the worker needs information to proceed:
 
 ```typescript
 // GOOD: Worker waits briefly for a prompt decision
-const reply = await intercom({
-  action: "ask",
+const reply = await intercom_ask({
   to: "planner",
   message: "API rate limit is 100/min. Should I implement client-side throttling or batching?"
 });
@@ -362,8 +354,7 @@ When you just want to inform:
 
 ```typescript
 // GOOD: Fire-and-forget notification
-intercom({
-  action: "send",
+intercom_send({
   to: "reviewer",
   message: "PR #123 is ready for review. Key changes in auth.ts."
 });
@@ -376,12 +367,11 @@ Make it easy for recipients to respond:
 
 ```typescript
 // GOOD: Recipient sees exact command to reply
-intercom({
-  action: "send",
+intercom_send({
   to: "worker",
   message: `Found the issue in auth.ts:142. Use getUserById() instead of getUser().
 
-Reply with: intercom({ action: "reply", message: "..." })`
+Reply with: intercom_reply({ message: "..." })`
 });
 ```
 
@@ -403,7 +393,7 @@ Use `/name` so others can target you easily:
 ```typescript
 // You can only have one pending ask at a time
 // Option 1: Use send instead
-intercom({ action: "send", to: "planner", message: "..." });
+intercom_send({ to: "planner", message: "..." });
 
 // Option 2: Wait for current ask to complete first
 ```
@@ -416,17 +406,17 @@ intercom({ action: "send", to: "planner", message: "..." });
 
 **"Session not found"**
 ```typescript
-const result = await intercom({ action: "send", to: "worker", message: "..." });
+const result = await intercom_send({ to: "worker", message: "..." });
 if (!result.delivered) {
   console.log("Failed:", result.reason);
   // → "Session not found" - check the name and list available sessions
-  await intercom({ action: "list" });
+  await intercom_list({});
 }
 ```
 
 **Ask continues asynchronously after 30 seconds**
 ```typescript
-const result = await intercom({ action: "ask", to: "planner", message: "..." });
+const result = await intercom_ask({ to: "planner", message: "..." });
 if (result.details?.pending) {
   // The message was delivered, but no prompt reply arrived.
   // Continue independent work; a late reply will trigger a new intercom message.
@@ -437,14 +427,14 @@ if (result.details?.pending) {
 
 ### Session not appearing in list
 
-1. Check intercom is enabled: `intercom({ action: "status" })`
+1. Check intercom is enabled: `intercom_status({})`
 2. Verify the target session has loaded pi-intercom
 3. Ensure both sessions are on the same machine (intercom is same-machine only)
 
 ### Message not delivered
 
 ```typescript
-const result = await intercom({ action: "send", to: "worker", message: "..." });
+const result = await intercom_send({ to: "worker", message: "..." });
 if (!result.delivered) {
   console.log("Failed:", result.reason);
   // → "Session not found" or delivery failure reason
@@ -456,7 +446,7 @@ if (!result.delivered) {
 Sessions automatically reconnect if the broker restarts. If persistently disconnected:
 
 ```typescript
-intercom({ action: "status" })
+intercom_status({})
 // Check if broker is running and restart if needed
 ```
 
@@ -466,8 +456,7 @@ intercom({ action: "status" })
 
 ```typescript
 // Research session finds relevant code
-intercom({
-  action: "send",
+intercom_send({
   to: "impl-session",
   message: "Found the bug. The issue is in validateUser() - it doesn't check for null.",
   attachments: [{
@@ -486,15 +475,13 @@ function validateUser(user: User) {
 
 ```typescript
 // Session A encounters error
-intercom({
-  action: "ask",
+intercom_ask({
   to: "session-b",
   message: "Getting 'Cannot read property of undefined' at line 78. Can you check if data.users is populated before this call?"
 });
 
 // Session B investigates and replies
-intercom({
-  action: "reply",
+intercom_reply({
   message: "data.users is null. The fetch failed silently. Add error handling in loadUsers()."
 });
 ```
@@ -503,11 +490,11 @@ intercom({
 
 ```typescript
 // Worker sends periodic updates
-intercom({ action: "send", to: "planner", message: "Task-1 complete (15min). Starting Task-2." });
+intercom_send({ to: "planner", message: "Task-1 complete (15min). Starting Task-2." });
 // ... work ...
-intercom({ action: "send", to: "planner", message: "Task-2 complete (30min). Task-3 blocked - need API key." });
+intercom_send({ to: "planner", message: "Task-2 complete (30min). Task-3 blocked - need API key." });
 // ... get unblocked ...
-intercom({ action: "send", to: "planner", message: "Task-3 complete. All done." });
+intercom_send({ to: "planner", message: "Task-3 complete. All done." });
 ```
 
 ### Long-Running Task with Checkpoints
@@ -516,18 +503,16 @@ intercom({ action: "send", to: "planner", message: "Task-3 complete. All done." 
 // For long tasks, use send for progress and ask only for concrete decisions
 
 // 1. Initial send with full context
-intercom({
-  action: "send",
+intercom_send({
   to: "worker",
   message: "Implement user authentication. This will take 30+ minutes. I'll check in at milestones."
 });
 
 // 2. Worker sends progress via send (no timeout)
-intercom({ action: "send", to: "planner", message: "Milestone 1: Login form complete (10min)" });
+intercom_send({ to: "planner", message: "Milestone 1: Login form complete (10min)" });
 
 // 3. Worker asks for specific decision when needed
-const decision = await intercom({
-  action: "ask",
+const decision = await intercom_ask({
   to: "planner",
   message: "Should we use JWT or session cookies? Need decision to continue."
 });

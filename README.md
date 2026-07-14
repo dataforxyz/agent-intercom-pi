@@ -129,27 +129,26 @@ Press **Alt+I** or run `/intercom-id` to copy a short handoff snippet for the cu
 
 ### From the Agent
 
-The agent can list sessions and send messages using the `intercom` tool. Tool calls and results render as compact transcript rows so send/ask/reply flows are easy to scan. For common patterns like planner-worker delegation, the bundled `pi-intercom` skill provides copy-paste ready examples:
+The agent uses six focused tools: `intercom_send`, `intercom_ask`, `intercom_reply`, `intercom_list`, `intercom_pending`, and `intercom_status`. Tool calls and results render as compact transcript rows so send/ask/reply flows are easy to scan. For common patterns like planner-worker delegation, the bundled `pi-intercom` skill provides copy-paste ready examples:
 
 ```typescript
 // List active sessions
-intercom({ action: "list" })
+intercom_list({})
 // → **Current session:**
 // → • executor (20d43841) — ~/projects/api (claude-sonnet-4) [self, idle]
 // → **Other sessions:**
 // → • research (6332faab) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
 
 // Send a message
-intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
+intercom_send({ to: "research", message: "Check if UserService.validate() handles null" })
 // → Message sent to research
 
 // Check connection status
-intercom({ action: "status" })
+intercom_status({})
 // → Connected: Yes, Session ID: abc123, Active sessions: 3
 
 // Send with attachments (code snippets, files, or context)
-intercom({
-  action: "send",
+intercom_send({
   to: "worker",
   message: "Here's the fix:",
   attachments: [{
@@ -168,13 +167,13 @@ When a message arrives, it appears inline in your chat with the sender's info an
 ```
 **From research** (~/projects/api)
 
-To reply, use the intercom tool: intercom({ action: "reply", message: "..." })
+To reply, use the intercom tool: intercom_reply({ message: "..." })
 
 Found the issue — UserService.validate() doesn't check for null input.
 See auth.ts:142-156.
 ```
 
-The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients do not need raw sender or `replyTo` IDs. Incoming messages are first written to a durable per-session inbox. Messages arriving within a 300 ms quiet window are combined into one model turn, with a 1-second maximum batching delay so a steady stream cannot postpone delivery forever. Busy sessions keep the batch queued until they are idle. Every original sender, message ID, timestamp, attachment, and reply context remains available in the batch details.
+The reply hint (enabled by default) points to `intercom_reply({ ... })`, so recipients never need protocol thread IDs. Incoming messages are first written to a durable per-session inbox. Messages arriving within a 300 ms quiet window are combined into one model turn, with a 1-second maximum batching delay so a steady stream cannot postpone delivery forever. Busy sessions keep the batch queued until they are idle. Every original sender, message ID, timestamp, attachment, and reply context remains available in the batch details.
 
 The sender receives two distinct delivery states in structured tool details: `accepted` means the broker accepted the message for routing, while `delivered` means the receiver durably queued it and acknowledged the delivery. Outbound messages are also written to a durable per-session outbox before transmission. If the broker disconnects between acceptance and receiver acknowledgement, the next connection automatically replays the original target, payload, and message ID. Attachment content is included in the agent-visible body, and delivered messages are rendered inline and stored in Pi session history.
 
@@ -194,7 +193,7 @@ Open two terminals and start pi in each. Name them so they can find each other:
 Verify they see each other from either session:
 
 ```typescript
-intercom({ action: "list" })
+intercom_list({})
 // → • worker — ~/projects/api (claude-sonnet-4) [idle]
 ```
 
@@ -204,8 +203,7 @@ Here's how a typical exchange looks. The planner delegates with `send` (fire-and
 
 **Planner sends a task:**
 ```typescript
-intercom({
-  action: "send",
+intercom_send({
   to: "worker",
   message: "Task-3: Add retry logic to API client. Key files: src/api/client.ts, src/api/types.ts. Ask if anything's unclear."
 })
@@ -213,8 +211,7 @@ intercom({
 
 **Worker hits an ambiguity — asks and waits:**
 ```typescript
-intercom({
-  action: "ask",
+intercom_ask({
   to: "planner",
   message: "Should retry apply to all endpoints or just idempotent ones? Also, max retry count and backoff strategy?"
 })
@@ -224,8 +221,7 @@ intercom({
 
 **Worker finds something unexpected — escalates and waits:**
 ```typescript
-intercom({
-  action: "ask",
+intercom_ask({
   to: "planner",
   message: "Found: fetchWithTimeout swallows network errors. Fixing this changes the error shape. OK to proceed?"
 })
@@ -234,8 +230,7 @@ intercom({
 
 **Worker reports completion:**
 ```typescript
-intercom({
-  action: "ask",
+intercom_ask({
   to: "planner",
   message: "Task-3 done. Added RetryPolicy type, applied to GET/PUT/DELETE, surfaced NetworkError, 4 tests passing."
 })
@@ -253,25 +248,25 @@ intercom({
 
 ### Reply Hints
 
-When `replyHint` is enabled (the default), incoming messages include the exact `intercom()` call to respond:
+When `replyHint` is enabled (the default), incoming messages include the exact `intercom_reply()` call to respond:
 
 ```
 **From planner** (~/projects/api)
 
-To reply, use the intercom tool: intercom({ action: "reply", message: "..." })
+To reply, use the intercom tool: intercom_reply({ message: "..." })
 
 Only GET/PUT/DELETE — never POST. Max 3 retries with exponential backoff starting at 100ms.
 ```
 
-This matters because the agent receiving the message doesn't need to reconstruct raw `to` and `replyTo` IDs — the hint is right there. Combined with idle-gated `triggerTurn` delivery, it enables real back-and-forth conversation without interrupting work in progress. If the reply happens later instead of in the triggered turn, `intercom({ action: "reply" })` falls back to the single unresolved inbound ask, and `intercom({ action: "pending" })` shows who is still waiting.
+This matters because the agent receiving the message never needs to see or reconstruct protocol thread IDs. Combined with idle-gated `triggerTurn` delivery, it enables real back-and-forth conversation without interrupting work in progress. If the reply happens later instead of in the triggered turn, `intercom_reply({ message: "..." })` falls back to the single unresolved inbound ask, and `intercom_pending({})` shows who is still waiting.
 
 ### `send` vs `ask`
 
-`send` is non-blocking with respect to a reply: it waits only for the receiver's durable-enqueue acknowledgement, then returns. By default, it sends immediately even in interactive sessions. If you want an approval dialog before non-reply sends, set `confirmSend: true` in config. Replies that include `replyTo` still skip confirmation so reply-hint flows can continue without an extra approval step.
+`intercom_send` is non-blocking with respect to a reply: it waits only for the receiver's durable-enqueue acknowledgement, then returns. By default, it sends immediately even in interactive sessions. If you want an approval dialog before non-reply sends, set `confirmSend: true` in config. `intercom_reply` skips confirmation so reply-hint flows can continue without an extra approval step.
 
-`ask` sends the message and waits up to 30 seconds for the recipient. A prompt reply comes back as the tool result, so the agent continues in the same turn with full context. If nobody replies within 30 seconds, the tool returns control without an error and keeps the request open asynchronously; a late reply arrives as a new intercom message. No confirmation dialog — if you're asking and waiting, the intent is clear.
+`intercom_ask` sends the message and waits up to 30 seconds for the recipient. A prompt reply comes back as the tool result, so the agent continues in the same turn with full context. If nobody replies within 30 seconds, the tool returns control without an error and keeps the request open asynchronously; a late reply arrives as a new intercom message. No confirmation dialog — if you're asking and waiting, the intent is clear.
 
-`reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom({ action: "reply", message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use `intercom({ action: "pending" })` to inspect them and then call `reply` with `to` to disambiguate.
+`intercom_reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom_reply({ message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use `intercom_pending({})` to inspect them and then call `intercom_reply` with `to` to select the sender.
 
 The planner typically uses `send`. If you prefer manual approval for outgoing non-reply messages, turn on `confirmSend: true`. The worker uses `ask` for everything (no confirmation needed, gets answers inline), so it can operate autonomously either way.
 
@@ -352,7 +347,7 @@ Child index: 0
 Which API should I use?
 ```
 
-Reply hints work the same as regular `intercom` ask/reply flows. The supervisor can reply with `intercom({ action: "reply", message: "..." })` and the subagent receives the answer as the tool result.
+Reply hints work the same as regular `intercom_ask`/`intercom_reply` flows. The supervisor can reply with `intercom_reply({ message: "..." })` and the subagent receives the answer as the tool result.
 
 For `interview_request`, the supervisor message includes the structured questions plus a fenced JSON answer example using this stable shape:
 
@@ -369,15 +364,18 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 ## Tool Reference
 
-### intercom
+### Split intercom tools
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `action` | string | `"list"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
-| `to` | string | Target session name or ID (for send/ask, or to disambiguate reply) |
-| `message` | string | Message text (for send/ask/reply) |
-| `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
-| `replyTo` | string | Optional message ID for threading or replying to an `ask` |
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `intercom_send` | required `to`, required `message`, optional `attachments` | Fire-and-forget delivery |
+| `intercom_ask` | required `to`, required `message`, optional `attachments` | Ask and wait briefly for a reply |
+| `intercom_reply` | required `message`, optional `to` | Reply to the active or pending inbound message; `to` selects a sender when multiple asks are pending |
+| `intercom_list` | none | List connected sessions |
+| `intercom_pending` | none | List unresolved inbound asks |
+| `intercom_status` | none | Show connection and queue status |
+
+Exact reply threading is internal. No split tool exposes `replyTo`, `reply_to`, or any message/thread-ID parameter.
 
 ### contact_supervisor
 
@@ -395,19 +393,21 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`progress_update`** — Sends a non-blocking update to the supervisor. Returns immediately after delivery. Use only for meaningful progress or unexpected discoveries that change the plan.
 
-### intercom actions
+### Tool behavior
 
-**`list`** — Returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. Status is derived automatically from Pi lifecycle events: `idle`, `thinking`, or `tool:<name>`.
+**`intercom_list`** returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status.
 
-**`send`** — Sends a message to the specified session. By default it sends immediately, including in interactive sessions. Set `confirmSend: true` in config if you want a confirmation dialog for non-reply sends. Replies that include `replyTo` skip confirmation. Structured results distinguish broker `accepted` from receiver-acknowledged `delivered` and include a stable failure `code` when delivery fails.
+**`intercom_send`** sends immediately and distinguishes broker `accepted` from receiver-acknowledged `delivered`. Set `confirmSend: true` for an interactive confirmation dialog.
 
-**`ask`** — Sends a message and waits up to 30 seconds for the recipient to reply. A prompt reply is returned as the tool result. After 30 seconds the tool returns a successful pending result so the agent can continue, while a late reply arrives as a new intercom message. The request remains replyable for the existing 10-minute ask expiry. Set `PI_INTERCOM_ASK_WAIT_MS` to change the blocking window. No confirmation dialog. Only one synchronously waiting `ask` is allowed per session at a time.
+**`intercom_ask`** waits up to 30 seconds for a prompt reply, then returns a successful pending result while keeping the request open for a late reply. `PI_INTERCOM_ASK_WAIT_MS` changes the blocking window.
 
-**`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass `to` or inspect them with `pending` first. Under the hood this is still a normal `send` with the exact `replyTo` value.
+**`intercom_reply`** resolves the active or pending inbound context internally. Pass optional `to` only to select a sender when multiple asks are pending; it is never a thread or message ID.
 
-**`pending`** — Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. Useful when replying after the original triggered turn.
+**`intercom_pending`** lists unresolved inbound asks with sender, elapsed time, and a preview.
 
-**`status`** — Shows connection status, session ID, total count of active sessions (including the current session), and queued inbox, outbox, and pending-ask counts.
+**`intercom_status`** shows connection, session, queue, and pending-ask status.
+
+The deprecated monolithic `intercom({ action: ... })` tool is hidden by default. Enable `legacyTool` only for temporary compatibility.
 
 ## Keyboard Shortcuts
 
@@ -434,6 +434,7 @@ Create `~/.pi/agent/intercom/config.json`:
   "inboundTrigger": "always",
   "enabled": true,
   "replyHint": true,
+  "legacyTool": false,
   "status": "researching"
 }
 ```
@@ -446,6 +447,7 @@ Create `~/.pi/agent/intercom/config.json`:
 | `inboundTrigger` | `"always"` | Auto-trigger policy for inbound broker messages: `"always"`, `"replies"`, or `"never"`. Local in-process subagent relay events still trigger the addressed session. |
 | `enabled` | true | Enable/disable intercom entirely |
 | `replyHint` | true | Include reply instruction in incoming messages |
+| `legacyTool` | false | Expose the deprecated monolithic `intercom({ action: ... })` tool. Compatibility only; can also be enabled with `PI_INTERCOM_LEGACY_TOOL=1`, and scheduled for removal at the next major boundary. |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 
 If `config.json` cannot be parsed or contains an invalid value, pi-intercom logs the error and fails closed for inbound broker auto-triggering by using `inboundTrigger: "never"` until the config is fixed.

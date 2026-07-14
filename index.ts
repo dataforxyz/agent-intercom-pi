@@ -796,8 +796,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       : "";
     const replyCommand = config.replyHint && stored.message.expectsReply
       ? batchSize === 1
-        ? `intercom({ action: "reply", message: "..." })`
-        : `intercom({ action: "reply", replyTo: "${stored.message.id}", message: "..." })`
+        ? `intercom_reply({ message: "..." })`
+        : `intercom_reply({ to: "${stored.from.name || stored.from.id}", message: "..." })`
       : undefined;
     return {
       key: stored.key,
@@ -811,7 +811,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function formatIncomingEntry(entry: InboundMessageEntry, position?: { index: number; total: number }): string {
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
     const prefix = position ? `[${position.index}/${position.total}] ` : "";
-    const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
+    const replyInstruction = entry.replyCommand ? `\n\nTo reply, use: ${entry.replyCommand}` : "";
     return `**${prefix}📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`;
   }
   function sendIncomingBatch(entries: InboundMessageEntry[], generation = runtimeGeneration, forceTrigger = false): void {
@@ -1650,9 +1650,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     } as any);
   }
 
-  pi.registerTool({
+  const legacyIntercomTool = {
     name: "intercom",
-    label: "Intercom",
+    label: "Intercom (Legacy)",
     description: `Send a message to another pi session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
@@ -2043,7 +2043,78 @@ Usage:
       }
       return new Text(text, 0, 0);
     },
+  } as any;
+
+  const attachmentParameters = Type.Optional(Type.Array(Type.Object({
+    type: StringEnum(["file", "snippet", "context"] as const),
+    name: Type.String(),
+    content: Type.String(),
+    language: Type.Optional(Type.String()),
+  })));
+
+  const executeSplitAction = (action: "list" | "send" | "ask" | "reply" | "pending" | "status") =>
+    async (toolCallId: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx: ExtensionContext) =>
+      legacyIntercomTool.execute(toolCallId, { ...params, action }, signal, onUpdate, ctx);
+
+  pi.registerTool({
+    name: "intercom_send",
+    label: "Intercom Send",
+    description: "Send a message to another local Pi session. Both the recipient and message are required.",
+    promptSnippet: "Send a fire-and-forget message to another local Pi session.",
+    promptGuidelines: ["Use intercom_send for progress updates, notifications, and other messages that do not require a conversational reply."],
+    parameters: Type.Object({
+      to: Type.String({ description: "Required recipient session name or stable session ID" }),
+      message: Type.String({ description: "Required message to send" }),
+      attachments: attachmentParameters,
+    }),
+    execute: executeSplitAction("send"),
   } as any);
+
+  pi.registerTool({
+    name: "intercom_ask",
+    label: "Intercom Ask",
+    description: "Ask another local Pi session a question, waiting briefly before continuing asynchronously.",
+    promptSnippet: "Ask another local Pi session a question when the next step depends on its answer.",
+    promptGuidelines: ["Use intercom_ask only when work genuinely depends on another session's answer; use intercom_send for notifications."],
+    parameters: Type.Object({
+      to: Type.String({ description: "Required recipient session name or stable session ID" }),
+      message: Type.String({ description: "Required question to ask" }),
+      attachments: attachmentParameters,
+    }),
+    execute: executeSplitAction("ask"),
+  } as any);
+
+  pi.registerTool({
+    name: "intercom_reply",
+    label: "Intercom Reply",
+    description: "Reply to an inbound intercom message or ask. Exact protocol threading is resolved internally.",
+    promptSnippet: "Reply to the active or pending inbound intercom message.",
+    promptGuidelines: ["Use intercom_reply to answer an inbound intercom message. Its optional `to` field selects a sender when multiple asks are pending; it is never a message or thread ID."],
+    parameters: Type.Object({
+      message: Type.String({ description: "Required reply text" }),
+      to: Type.Optional(Type.String({ description: "Optional sender/session selector only when multiple pending asks need disambiguation; never a message or thread ID" })),
+    }),
+    execute: executeSplitAction("reply"),
+  } as any);
+
+  for (const definition of [
+    { name: "intercom_list", label: "Intercom List", action: "list", description: "List active local intercom sessions.", promptSnippet: "List active local intercom sessions." },
+    { name: "intercom_pending", label: "Intercom Pending", action: "pending", description: "List unresolved inbound intercom asks.", promptSnippet: "List unresolved inbound intercom asks." },
+    { name: "intercom_status", label: "Intercom Status", action: "status", description: "Show this session's intercom connection status.", promptSnippet: "Show intercom connection status." },
+  ] as const) {
+    pi.registerTool({
+      name: definition.name,
+      label: definition.label,
+      description: definition.description,
+      promptSnippet: definition.promptSnippet,
+      parameters: Type.Object({}),
+      execute: executeSplitAction(definition.action),
+    } as any);
+  }
+
+  if (config.legacyTool) {
+    pi.registerTool(legacyIntercomTool);
+  }
 
   async function resolveCurrentContact(ctx: ExtensionContext, generation = runtimeGeneration): Promise<{ target: string; name?: string; id: string; duplicateName: boolean } | undefined> {
     let contactClient: IntercomClient;

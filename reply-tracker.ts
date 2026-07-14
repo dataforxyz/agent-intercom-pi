@@ -94,13 +94,13 @@ export class ReplyTracker {
         return replyableMatches[0]!;
       }
       if (replyableMatches.length > 1) {
-        throw new Error("Multiple asks are active in this intercom batch — specify `replyTo`");
+        throw new Error("Multiple asks are active in this intercom batch — specify `to` to select the sender");
       }
       if (turnMatches.length === 1) {
         return turnMatches[0]!;
       }
       if (turnMatches.length > 1) {
-        throw new Error("Multiple messages are active in this intercom batch — specify `replyTo`");
+        throw new Error("Multiple messages are active in this intercom batch — specify `to` to select the sender");
       }
     }
 
@@ -115,7 +115,7 @@ export class ReplyTracker {
         return matches[0]!;
       }
       if (matches.length > 1) {
-        throw new Error(`Multiple pending asks from \"${options.to}\" — specify \`replyTo\` using a message ID from \`pending\`.`);
+        throw new Error(`Multiple pending asks from \"${options.to}\" cannot be disambiguated by sender alone`);
       }
       if (pending.length > 1) {
         throw new Error(`No pending ask from \"${options.to}\"`);
@@ -126,7 +126,7 @@ export class ReplyTracker {
       throw new Error("No active intercom context to reply to");
     }
 
-    throw new Error("Multiple pending asks — specify `replyTo` using a message ID from `pending`");
+    throw new Error("Multiple pending asks — specify `to` using a sender from `intercom_pending`");
   }
 
   markReplied(replyTo: string, fromSessionId?: string): void {

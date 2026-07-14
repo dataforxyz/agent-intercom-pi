@@ -47,6 +47,38 @@ test("loadConfig defaults inboundTrigger to current auto-trigger behavior", asyn
   }
 });
 
+test("loadConfig hides the legacy monolithic tool by default", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-intercom-config-"));
+  const previous = process.env.PI_INTERCOM_LEGACY_TOOL;
+  delete process.env.PI_INTERCOM_LEGACY_TOOL;
+  try {
+    await withAgentDir(root, () => {
+      assert.equal(loadConfig().legacyTool, false);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.PI_INTERCOM_LEGACY_TOOL;
+    else process.env.PI_INTERCOM_LEGACY_TOOL = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig enables the legacy tool through config or environment", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-intercom-config-"));
+  const previous = process.env.PI_INTERCOM_LEGACY_TOOL;
+  try {
+    mkdirSync(join(root, "intercom"), { recursive: true });
+    writeFileSync(join(root, "intercom", "config.json"), JSON.stringify({ legacyTool: true }));
+    delete process.env.PI_INTERCOM_LEGACY_TOOL;
+    await withAgentDir(root, () => assert.equal(loadConfig().legacyTool, true));
+    process.env.PI_INTERCOM_LEGACY_TOOL = "0";
+    await withAgentDir(root, () => assert.equal(loadConfig().legacyTool, false));
+  } finally {
+    if (previous === undefined) delete process.env.PI_INTERCOM_LEGACY_TOOL;
+    else process.env.PI_INTERCOM_LEGACY_TOOL = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig accepts inboundTrigger replies policy", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-intercom-config-"));
   try {

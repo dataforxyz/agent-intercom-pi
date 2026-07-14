@@ -23,13 +23,17 @@ const childEnvKeys = [
 const sharedHomeDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-home-"));
 const previousHome = process.env.HOME;
 const previousUserProfile = process.env.USERPROFILE;
+const previousLegacyTool = process.env.PI_INTERCOM_LEGACY_TOOL;
 process.env.HOME = sharedHomeDir;
 process.env.USERPROFILE = sharedHomeDir;
+process.env.PI_INTERCOM_LEGACY_TOOL = "1";
 const { IntercomClient } = await import("./broker/client.ts");
 const { chooseContactTarget, formatContactInstruction } = await import("./index.ts");
 process.on("exit", () => {
   process.env.HOME = previousHome;
   process.env.USERPROFILE = previousUserProfile;
+  if (previousLegacyTool === undefined) delete process.env.PI_INTERCOM_LEGACY_TOOL;
+  else process.env.PI_INTERCOM_LEGACY_TOOL = previousLegacyTool;
   rmSync(sharedHomeDir, { recursive: true, force: true });
 });
 
@@ -987,6 +991,34 @@ test("intercom tool prefers exact names over ID prefixes", { concurrency: false 
   }
 });
 
+test("split intercom tools are the default model-facing schema", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const previous = process.env.PI_INTERCOM_LEGACY_TOOL;
+  delete process.env.PI_INTERCOM_LEGACY_TOOL;
+  try {
+    const harness = createExtensionHarness();
+    piIntercomExtension(harness.pi as never);
+    assert.deepEqual(harness.tools.map((tool) => tool.name), [
+      "intercom_send",
+      "intercom_ask",
+      "intercom_reply",
+      "intercom_list",
+      "intercom_pending",
+      "intercom_status",
+    ]);
+
+    const schemas = Object.fromEntries(harness.tools.map((tool) => [tool.name, tool.parameters as Record<string, unknown>]));
+    assert.deepEqual((schemas.intercom_send as { required?: string[] }).required, ["to", "message"]);
+    assert.deepEqual((schemas.intercom_ask as { required?: string[] }).required, ["to", "message"]);
+    assert.deepEqual((schemas.intercom_reply as { required?: string[] }).required, ["message"]);
+    assert.doesNotMatch(JSON.stringify(schemas), /replyTo|reply_to/);
+    assert.equal(harness.tools.some((tool) => tool.name === "intercom"), false);
+  } finally {
+    if (previous === undefined) delete process.env.PI_INTERCOM_LEGACY_TOOL;
+    else process.env.PI_INTERCOM_LEGACY_TOOL = previous;
+  }
+});
+
 test("intercom tool renders compact call and result rows", async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const harness = createExtensionHarness();
@@ -1513,7 +1545,15 @@ test("supervisor tool registers only when child metadata is present", async () =
   await withChildOrchestratorEnv({}, () => {
     const harness = createExtensionHarness();
     piIntercomExtension(harness.pi as never);
-    assert.deepEqual(harness.tools.map((tool) => tool.name), ["intercom"]);
+    assert.deepEqual(harness.tools.map((tool) => tool.name), [
+      "intercom_send",
+      "intercom_ask",
+      "intercom_reply",
+      "intercom_list",
+      "intercom_pending",
+      "intercom_status",
+      "intercom",
+    ]);
   });
 
   await withChildOrchestratorEnv({
@@ -1525,7 +1565,16 @@ test("supervisor tool registers only when child metadata is present", async () =
   }, () => {
     const harness = createExtensionHarness();
     piIntercomExtension(harness.pi as never);
-    assert.deepEqual(harness.tools.map((tool) => tool.name), ["contact_supervisor", "intercom"]);
+    assert.deepEqual(harness.tools.map((tool) => tool.name), [
+      "contact_supervisor",
+      "intercom_send",
+      "intercom_ask",
+      "intercom_reply",
+      "intercom_list",
+      "intercom_pending",
+      "intercom_status",
+      "intercom",
+    ]);
     const supervisorTool = harness.tools.find((tool) => tool.name === "contact_supervisor");
     assert.match(JSON.stringify(supervisorTool?.parameters), /interview_request/);
     assert.match(JSON.stringify(supervisorTool?.parameters), /questions/);
