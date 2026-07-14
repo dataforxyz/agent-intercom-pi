@@ -79,6 +79,26 @@ test("loadConfig enables the legacy tool through config or environment", async (
   }
 });
 
+test("loadConfig handles invalid legacy-tool environment consistently without config.json", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-intercom-config-"));
+  const previous = process.env.PI_INTERCOM_LEGACY_TOOL;
+  const previousError = console.error;
+  process.env.PI_INTERCOM_LEGACY_TOOL = "sometimes";
+  console.error = () => undefined;
+  try {
+    await withAgentDir(root, () => {
+      const config = loadConfig();
+      assert.equal(config.legacyTool, false);
+      assert.equal(config.inboundTrigger, "never");
+    });
+  } finally {
+    console.error = previousError;
+    if (previous === undefined) delete process.env.PI_INTERCOM_LEGACY_TOOL;
+    else process.env.PI_INTERCOM_LEGACY_TOOL = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig accepts inboundTrigger replies policy", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-intercom-config-"));
   try {
