@@ -563,3 +563,15 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 - **Broker lifecycle** — The broker auto-spawns on first use and exits when idle; sessions reconnect automatically if the broker restarts
 - **At-least-once recovery** — A crash in the small interval between Pi injection and inbox consumption can replay a batch after restart
 - **Bounded sender queue** — Each session keeps at most 256 unfinished outbound messages; definitive delivery failures are removed rather than retried forever
+
+## License
+
+The current project is licensed under the [GNU Affero General Public License
+v3.0 or later](LICENSE) (`AGPL-3.0-or-later`). If you modify this software and
+make the modified version available to users over a network, the AGPL requires
+you to offer those users the corresponding source code.
+
+Portions derived from the original MIT-licensed `pi-intercom` project retain
+their original notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+[licenses/MIT-pi-intercom.txt](licenses/MIT-pi-intercom.txt). Versions already
+published under MIT remain available under their original terms.

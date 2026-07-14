@@ -1,7 +1,7 @@
 {
   "name": "pi-intercom",
   "version": "0.7.0",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "index.ts",
   "files": [
@@ -12,7 +12,10 @@
     "!broker/**/*.test.ts",
     "ui/**/*.ts",
     "skills/**/*",
-    "!**/*.test.ts"
+    "!**/*.test.ts",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses/**/*",
+    "COPYRIGHT"
   ],
   "scripts": {
     "test": "tsx --test broker/*.test.ts *.test.ts test/*.test.ts",
