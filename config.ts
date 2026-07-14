@@ -86,9 +86,14 @@ function applyEnvironment(config: IntercomConfig): IntercomConfig {
 export function loadConfig(): IntercomConfig {
   const configPath = getConfigPath();
   if (!existsSync(configPath)) {
-    return applyEnvironment({ ...defaults });
+    try {
+      return applyEnvironment({ ...defaults });
+    } catch (error) {
+      console.error(`Failed to load intercom config at ${configPath}:`, error);
+      return { ...defaults, inboundTrigger: "never" };
+    }
   }
-  
+
   try {
     const raw = readFileSync(configPath, "utf-8");
     const parsed: unknown = JSON.parse(raw);

@@ -401,7 +401,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`intercom_ask`** waits up to 30 seconds for a prompt reply, then returns a successful pending result while keeping the request open for a late reply. `PI_INTERCOM_ASK_WAIT_MS` changes the blocking window.
 
-**`intercom_reply`** resolves the active or pending inbound context internally. Pass optional `to` only to select a sender when multiple asks are pending; it is never a thread or message ID.
+**`intercom_reply`** resolves the active or pending inbound context internally. Pass optional `to` only to select a sender when multiple asks are pending; it is never a thread or message ID. If multiple unresolved asks from the same sender remain after their original turns, sender-only disambiguation is intentionally unavailable; answer them while their inbound turn context is active or ask the sender to resend the specific question.
 
 **`intercom_pending`** lists unresolved inbound asks with sender, elapsed time, and a preview.
 

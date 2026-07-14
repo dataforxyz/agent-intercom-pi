@@ -797,7 +797,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const replyCommand = config.replyHint && stored.message.expectsReply
       ? batchSize === 1
         ? `intercom_reply({ message: "..." })`
-        : `intercom_reply({ to: "${stored.from.name || stored.from.id}", message: "..." })`
+        : `intercom_reply({ to: "${stored.from.id}", message: "..." })`
       : undefined;
     return {
       key: stored.key,
@@ -1370,8 +1370,19 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return new InlineMessageComponent(entry.from, entry.message, theme, entry.replyCommand, entry.bodyText, !options.expanded);
   });
 
+  const intercomResultToolNames = new Set([
+    "intercom",
+    "intercom_send",
+    "intercom_ask",
+    "intercom_reply",
+    "intercom_list",
+    "intercom_pending",
+    "intercom_status",
+    "contact_supervisor",
+  ]);
+
   pi.on("tool_result", (event) => {
-    if (event.toolName !== "intercom" && event.toolName !== "contact_supervisor") {
+    if (!intercomResultToolNames.has(event.toolName)) {
       return;
     }
     if (!event.details || typeof event.details !== "object") {
@@ -1736,6 +1747,12 @@ Usage:
         }
 
         case "send": {
+          if (!to && replyTo) {
+            return {
+              content: [{ type: "text", text: `Missing required 'to' for action 'send'. 'replyTo' is a message ID, not a recipient. Retry with { action: "send", to: "${replyTo}", message: "..." } if that value is the intended session target.` }],
+              details: { error: true, missing: ["to"], invalidRecipientField: "replyTo" },
+            };
+          }
           if (!to || !message) {
             return {
               content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
@@ -1798,6 +1815,12 @@ Usage:
         }
 
         case "ask": {
+          if (!to && replyTo) {
+            return {
+              content: [{ type: "text", text: `Missing required 'to' for action 'ask'. 'replyTo' is a message ID, not a recipient. Retry with { action: "ask", to: "${replyTo}", message: "..." } if that value is the intended session target.` }],
+              details: { error: true, missing: ["to"], invalidRecipientField: "replyTo" },
+            };
+          }
           if (!to || !message) {
             return {
               content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
@@ -2052,9 +2075,14 @@ Usage:
     language: Type.Optional(Type.String()),
   })));
 
-  const executeSplitAction = (action: "list" | "send" | "ask" | "reply" | "pending" | "status") =>
+  type IntercomAction = "list" | "send" | "ask" | "reply" | "pending" | "status";
+  const executeSplitAction = (action: IntercomAction) =>
     async (toolCallId: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx: ExtensionContext) =>
       legacyIntercomTool.execute(toolCallId, { ...params, action }, signal, onUpdate, ctx);
+  const renderSplitCall = (action: IntercomAction) =>
+    (args: Record<string, unknown>, theme: unknown, context: unknown) =>
+      legacyIntercomTool.renderCall({ ...args, action }, theme, context);
+  const renderSplitResult = legacyIntercomTool.renderResult;
 
   pi.registerTool({
     name: "intercom_send",
@@ -2068,6 +2096,8 @@ Usage:
       attachments: attachmentParameters,
     }),
     execute: executeSplitAction("send"),
+    renderCall: renderSplitCall("send"),
+    renderResult: renderSplitResult,
   } as any);
 
   pi.registerTool({
@@ -2082,6 +2112,8 @@ Usage:
       attachments: attachmentParameters,
     }),
     execute: executeSplitAction("ask"),
+    renderCall: renderSplitCall("ask"),
+    renderResult: renderSplitResult,
   } as any);
 
   pi.registerTool({
@@ -2095,6 +2127,8 @@ Usage:
       to: Type.Optional(Type.String({ description: "Optional sender/session selector only when multiple pending asks need disambiguation; never a message or thread ID" })),
     }),
     execute: executeSplitAction("reply"),
+    renderCall: renderSplitCall("reply"),
+    renderResult: renderSplitResult,
   } as any);
 
   for (const definition of [
@@ -2109,6 +2143,8 @@ Usage:
       promptSnippet: definition.promptSnippet,
       parameters: Type.Object({}),
       execute: executeSplitAction(definition.action),
+      renderCall: renderSplitCall(definition.action),
+      renderResult: renderSplitResult,
     } as any);
   }
 

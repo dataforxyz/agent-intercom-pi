@@ -974,6 +974,21 @@ test("intercom tool prefers exact names over ID prefixes", { concurrency: false 
     await harness.emitLifecycle("session_start");
 
     const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+    for (const action of ["send", "ask"] as const) {
+      const malformed = await intercomTool.execute(
+        `malformed-${action}`,
+        { action, message: "Correction", replyTo: "orchestrator" },
+        new AbortController().signal,
+        undefined,
+        harness.ctx,
+      );
+      assert.equal(malformed.details?.error, true);
+      assert.deepEqual(malformed.details?.missing, ["to"]);
+      assert.equal(malformed.details?.invalidRecipientField, "replyTo");
+      assert.match(malformed.content[0]?.text ?? "", new RegExp(`Missing required 'to' for action '${action}'`));
+      assert.match(malformed.content[0]?.text ?? "", /replyTo.*not a recipient/);
+    }
+
     const exactNameReceived = Promise.race([
       once(orchestrator, "message") as Promise<[SessionInfo, Message]>,
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
@@ -1035,6 +1050,14 @@ test("intercom tool renders compact call and result rows", async () => {
     attachments: [{ type: "snippet", name: "note.ts", content: "const ok = true;" }],
   }, renderTheme, {})), /intercom ask → planner \(1 attachment\)\n  Need a decision/);
 
+  const splitAskTool = harness.tools.find((tool) => tool.name === "intercom_ask")!;
+  assert.ok(splitAskTool.renderCall);
+  assert.ok(splitAskTool.renderResult);
+  assert.match(renderToText(splitAskTool.renderCall({
+    to: "planner",
+    message: "Need a split-tool decision.",
+  }, renderTheme, {})), /intercom ask → planner\n  Need a split-tool decision/);
+
   const resultText = renderToText(intercomTool.renderResult({
     content: [{ type: "text", text: "Message sent to planner" }],
     details: { delivered: true, messageId: "abcdef123456" },
@@ -1054,11 +1077,19 @@ test("intercom tool result hook marks failed details as errors", async () => {
   const harness = createExtensionHarness();
   piIntercomExtension(harness.pi as never);
 
-  const errorResults = await harness.emitLifecycleResults("tool_result", {
-    toolName: "intercom",
-    details: { error: true },
-  });
-  assert.deepEqual(errorResults.filter(Boolean), [{ isError: true }]);
+  for (const toolName of ["intercom", "intercom_send", "intercom_ask", "intercom_reply", "intercom_list", "intercom_pending", "intercom_status"]) {
+    const errorResults = await harness.emitLifecycleResults("tool_result", {
+      toolName,
+      details: { error: true },
+    });
+    assert.deepEqual(errorResults.filter(Boolean), [{ isError: true }], `${toolName} error result`);
+
+    const okResults = await harness.emitLifecycleResults("tool_result", {
+      toolName,
+      details: { delivered: true },
+    });
+    assert.deepEqual(okResults.filter(Boolean), [], `${toolName} successful result`);
+  }
 
   const deliveryResults = await harness.emitLifecycleResults("tool_result", {
     toolName: "contact_supervisor",
@@ -1066,11 +1097,6 @@ test("intercom tool result hook marks failed details as errors", async () => {
   });
   assert.deepEqual(deliveryResults.filter(Boolean), [{ isError: true }]);
 
-  const okResults = await harness.emitLifecycleResults("tool_result", {
-    toolName: "intercom",
-    details: { delivered: true },
-  });
-  assert.deepEqual(okResults.filter(Boolean), []);
 });
 
 test("contact supervisor tool renders reason and reply state", async () => {
@@ -1272,6 +1298,46 @@ test("idle recipients receive message bursts as one ordered model turn", { concu
     assert.deepEqual(details.entries?.map((entry) => entry.message?.id), ["batch-note-1", "batch-note-2", "batch-note-3"]);
   } finally {
     await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("batched reply hints use stable sender IDs when names are duplicated", { concurrency: false }, async () => {
+  const { orchestrator, cleanup } = await setupClients();
+  const duplicate = createAcknowledgingClient();
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const harness = createExtensionHarness("duplicate-hint-worker", {
+    hasUI: true,
+    isIdle: () => true,
+    sessionId: "session-duplicate-hint-worker",
+  });
+
+  try {
+    await duplicate.connect({
+      name: "orchestrator",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    }, "duplicate-hint-sender");
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const target = await waitForSessionByName(orchestrator, "duplicate-hint-worker");
+
+    await Promise.all([
+      orchestrator.send(target.id, { messageId: "duplicate-hint-1", text: "First question?", expectsReply: true }),
+      duplicate.send(target.id, { messageId: "duplicate-hint-2", text: "Second question?", expectsReply: true }),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const content = harness.sentMessages[0]?.message.content ?? "";
+    assert.match(content, new RegExp(`intercom_reply\\(\\{ to: "${orchestrator.sessionId}"`));
+    assert.match(content, /intercom_reply\(\{ to: "duplicate-hint-sender"/);
+    assert.doesNotMatch(content, /intercom_reply\(\{ to: "orchestrator"/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await duplicate.disconnect().catch(() => undefined);
     await cleanup();
   }
 });
