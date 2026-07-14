@@ -12,11 +12,15 @@ async function readEventually(file: string, timeoutMs = 1000): Promise<string> {
   let lastError: unknown;
   while (Date.now() < deadline) {
     try {
-      return readFileSync(file, "utf8");
+      const contents = readFileSync(file, "utf8");
+      if (contents.length > 0) {
+        return contents;
+      }
+      lastError = new Error(`Waiting for clipboard contents in ${file}`);
     } catch (error) {
       lastError = error;
-      await delay(10);
     }
+    await delay(10);
   }
   throw lastError instanceof Error ? lastError : new Error(`Timed out reading ${file}`);
 }

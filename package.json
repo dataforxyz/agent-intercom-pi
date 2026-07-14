@@ -20,6 +20,7 @@
   ],
   "scripts": {
     "test": "tsx --test broker/*.test.ts *.test.ts test/*.test.ts",
+    "test:ci": "tsx --test --test-concurrency=1 broker/*.test.ts *.test.ts test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [

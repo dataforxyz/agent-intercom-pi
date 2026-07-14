@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Add CI for branches and pull requests.
+- Add CI for branches and pull requests, including a serialized integration-test mode for stable hosted-runner execution.
+- Fix the clipboard-helper test to wait for non-empty output instead of racing file creation.
 - Add tag-driven npm trusted publishing with provenance and automatic GitHub Releases.
 
 ## [0.9.1] - 2026-07-14

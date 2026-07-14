@@ -48,7 +48,7 @@ jobs:
             npm install --ignore-scripts
           fi
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:ci
       - run: npm run build --if-present
 
       - name: Publish to npm
