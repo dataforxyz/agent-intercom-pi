@@ -12,6 +12,7 @@
 | Codex | [`agent-intercom-codex`](https://github.com/dataforxyz/agent-intercom-codex) |
 | Claude Code | [`agent-intercom-claude`](https://github.com/dataforxyz/agent-intercom-claude) |
 | OpenCode | [`agent-intercom-opencode`](https://github.com/dataforxyz/agent-intercom-opencode) |
+| Fleet lifecycle | [`agent-intercom-orchestrator`](https://github.com/dataforxyz/agent-intercom-orchestrator) |
 
 ## Origin and thanks
 
@@ -47,7 +48,22 @@ pi install npm:pi-intercom
 
 Then restart Pi. The extension auto-connects to the broker on startup and registers the bundled `pi-intercom` skill for common coordination patterns.
 
-Pi loads the extension directly, including its native **Alt+I** contact-copy shortcut, so no wrapper command or shell alias is required. You can still alias your usual Pi invocation for convenience, but unlike adapters that need a wrapper to add terminal behavior, an alias does not enable any additional pi-intercom features.
+To let Pi create and safely own persistent Pi, Codex, Claude Code, and OpenCode coworkers, install the companion orchestrator Pi plugin too:
+
+```bash
+pi install git:github.com/dataforxyz/agent-intercom-orchestrator
+```
+
+Restart Pi or run `/reload`, then verify:
+
+```typescript
+agent_fleet({ action: "doctor" })
+agent_fleet({ action: "capabilities" })
+```
+
+The orchestrator package adds the `agent_fleet` tool, `/agents*` commands, a scoped worker footer, and its manager Agent Skill. It uses exact systemd user-service cgroups, leases, adoption, and verified descendant cleanup. Linux with a working systemd user manager is required. Intercom handles communication; the orchestrator handles worker ownership and lifecycle, so most fleet-manager setups should install both packages.
+
+Pi loads the Intercom extension directly, including its native **Alt+I** contact-copy shortcut, so no wrapper command or shell alias is required. You can still alias your usual Pi invocation for convenience, but unlike adapters that need a wrapper to add terminal behavior, an alias does not enable any additional pi-intercom features.
 
 Pi-intercom is also protocol-compatible with the companion Codex, Claude, and OpenCode adapters. They share the same local broker and runtime directory, so sessions from all four hosts appear in the same session list and can send, ask, reply, and recover messages across host boundaries. The first connected adapter can start the broker; Pi does not need to be launched first.
 
@@ -73,7 +89,7 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
-If you upgrade pi-intercom while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
+If you upgrade pi-intercom or the orchestrator while sessions are already open, run `/reload` in each open Pi session (and restart any companion `coi`, `cci`, or OpenCode adapter). Update the packages with `pi update --extension npm:pi-intercom` and `pi update --extension git:github.com/dataforxyz/agent-intercom-orchestrator`. Extensions are loaded into the running host process, so an existing session cannot adopt new broker/discovery code until it reloads. This is especially important when upgrading from a release that allowed multiple broker processes to form separate session-list "islands": the broker ownership fix prevents new splits, but it cannot move clients that are still running the old code. After every host has reloaded once, they converge on the same broker automatically.
 
 If `/intercom` still reports no peers, first confirm the other Pi windows have pi-intercom loaded and have also been reloaded. Open Pi processes without the extension, disabled sessions, and sessions using a different `PI_CODING_AGENT_DIR` intentionally do not appear in the same list.
 
