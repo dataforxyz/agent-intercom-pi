@@ -121,7 +121,7 @@ test("reply errors when multiple pending asks and no to", () => {
   tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "First"), 1000);
   tracker.recordIncomingMessage(createSession("reviewer-id", "reviewer"), createMessage("ask-2", "Second"), 1001);
 
-  assert.throws(() => tracker.resolveReplyTarget({}, 1002), /Multiple pending asks — specify `replyTo`/);
+  assert.throws(() => tracker.resolveReplyTarget({}, 1002), /Multiple pending asks — specify `to`/);
 });
 
 test("reply removes pending ask after successful reply", () => {

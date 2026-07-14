@@ -54,6 +54,9 @@ export interface IntercomConfig {
   
   /** Show reply hint in incoming messages (default: true) */
   replyHint: boolean;
+
+  /** Expose the deprecated monolithic `intercom` tool to models (default: false) */
+  legacyTool: boolean;
 }
 
 export function getConfigPath(intercomDir: string = getIntercomDirPath()): string {
@@ -67,12 +70,23 @@ const defaults: IntercomConfig = {
   inboundTrigger: "always",
   enabled: true,
   replyHint: true,
+  legacyTool: false,
 };
+
+function applyEnvironment(config: IntercomConfig): IntercomConfig {
+  const legacyToolEnv = process.env.PI_INTERCOM_LEGACY_TOOL?.trim().toLowerCase();
+  if (!legacyToolEnv) return config;
+  if (!["1", "true", "yes", "0", "false", "no"].includes(legacyToolEnv)) {
+    throw new Error("PI_INTERCOM_LEGACY_TOOL must be one of: 1, true, yes, 0, false, no");
+  }
+  config.legacyTool = ["1", "true", "yes"].includes(legacyToolEnv);
+  return config;
+}
 
 export function loadConfig(): IntercomConfig {
   const configPath = getConfigPath();
   if (!existsSync(configPath)) {
-    return { ...defaults };
+    return applyEnvironment({ ...defaults });
   }
   
   try {
@@ -142,6 +156,13 @@ export function loadConfig(): IntercomConfig {
       config.replyHint = parsedConfig.replyHint;
     }
 
+    if (Object.hasOwn(parsedConfig, "legacyTool")) {
+      if (typeof parsedConfig.legacyTool !== "boolean") {
+        throw new Error(`"legacyTool" must be a boolean`);
+      }
+      config.legacyTool = parsedConfig.legacyTool;
+    }
+
     if (Object.hasOwn(parsedConfig, "status")) {
       if (typeof parsedConfig.status !== "string") {
         throw new Error(`"status" must be a string`);
@@ -149,7 +170,7 @@ export function loadConfig(): IntercomConfig {
       config.status = parsedConfig.status;
     }
 
-    return config;
+    return applyEnvironment(config);
   } catch (error) {
     console.error(`Failed to load intercom config at ${configPath}:`, error);
     return { ...defaults, inboundTrigger: "never" };
