@@ -155,13 +155,34 @@ async function waitForBrokerReady(broker: ChildProcessWithoutNullStreams): Promi
   await ready;
 }
 
+function waitForChildExit(broker: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+  if (broker.exitCode !== null || broker.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const finish = (exited: boolean) => {
+      clearTimeout(timeout);
+      broker.off("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    broker.once("exit", onExit);
+  });
+}
+
 async function stopBrokerProcess(broker: ChildProcessWithoutNullStreams): Promise<void> {
   if (broker.exitCode !== null || broker.signalCode !== null) {
     return;
   }
-  const exited = once(broker, "exit").catch(() => undefined);
+  const gracefulExit = waitForChildExit(broker, 2000);
   broker.kill("SIGTERM");
-  await exited;
+  if (await gracefulExit || broker.exitCode !== null || broker.signalCode !== null) {
+    return;
+  }
+  const forcedExit = waitForChildExit(broker, 2000);
+  broker.kill("SIGKILL");
+  await forcedExit;
 }
 
 async function withChildOrchestratorEnv<T>(metadata: {

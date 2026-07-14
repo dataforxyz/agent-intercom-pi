@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Add CI for branches and pull requests, including a serialized integration-test mode for stable hosted-runner execution.
-- Fix hosted-runner test races by waiting for non-empty clipboard output and arming broker exit listeners before termination.
+- Fix hosted-runner test races by waiting for non-empty clipboard output, arming broker exit listeners before termination, and bounding cleanup with `SIGKILL` escalation.
 - Add tag-driven npm trusted publishing with provenance and automatic GitHub Releases.
 
 ## [0.9.1] - 2026-07-14
