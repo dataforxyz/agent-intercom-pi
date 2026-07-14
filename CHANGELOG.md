@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.0] - 2026-07-14
+
+- Align the Agent Intercom family on one coordinated `0.9.0` release line.
+- No behavior change from the immediately preceding AGPL release.
+
 All notable changes to the `pi-intercom` extension will be documented in this file.
 
 ## [0.8.0] - 2026-07-14
