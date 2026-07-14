@@ -570,6 +570,22 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 - **At-least-once recovery** — A crash in the small interval between Pi injection and inbox consumption can replay a batch after restart
 - **Bounded sender queue** — Each session keeps at most 256 unfinished outbound messages; definitive delivery failures are removed rather than retried forever
 
+## Releasing
+
+Releases are automated from version tags. Update `package.json`, the lockfile when
+present, and `CHANGELOG.md` on `main`, then push an annotated tag that exactly
+matches the package version:
+
+```bash
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+The release workflow verifies that the tag points into `main`, runs typecheck and
+tests, publishes the public npm package with trusted OIDC provenance, and creates
+the GitHub Release. Existing npm versions and GitHub Releases are skipped safely
+when a workflow is rerun.
+
 ## License
 
 The current project is licensed under the [GNU Affero General Public License
