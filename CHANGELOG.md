@@ -2,7 +2,7 @@
 
 All notable changes to the `pi-intercom` extension will be documented in this file.
 
-## Unreleased
+## [0.8.0] - 2026-07-14
 
 ### Changed
 - Changed the current project license to `AGPL-3.0-or-later`. Previously published MIT versions remain under MIT, and original `pi-intercom` notices are preserved in `THIRD_PARTY_NOTICES.md`.

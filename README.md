@@ -574,4 +574,5 @@ you to offer those users the corresponding source code.
 Portions derived from the original MIT-licensed `pi-intercom` project retain
 their original notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
 [licenses/MIT-pi-intercom.txt](licenses/MIT-pi-intercom.txt). Versions already
-published under MIT remain available under their original terms.
+published under MIT remain available under their original terms. See
+[LICENSE_TRANSITION.md](LICENSE_TRANSITION.md) for the exact commit and tag boundary.
