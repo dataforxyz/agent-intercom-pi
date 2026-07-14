@@ -372,10 +372,10 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
   const { readFileSync } = await import("node:fs");
   const { createMessageReader, writeMessage } = await import("./broker/framing.ts");
   const agentDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-tcp-agent-"));
-  const broker = spawn("npx", [
-    "--no-install",
+  const broker = spawn(process.execPath, [
+    "--import",
     "tsx",
-    "-e",
+    "--eval",
     "Object.defineProperty(process, 'platform', { value: 'win32' }); import('./broker/broker.ts').catch((error) => { console.error(error); process.exit(1); });",
   ], {
     cwd: repoDir,
@@ -509,7 +509,7 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
 });
 
 async function setupClients() {
-  const broker = spawn("npx", ["--no-install", "tsx", path.join(repoDir, "broker", "broker.ts")], {
+  const broker = spawn(process.execPath, ["--import", "tsx", path.join(repoDir, "broker", "broker.ts")], {
     cwd: repoDir,
     env: { ...process.env, HOME: sharedHomeDir, USERPROFILE: sharedHomeDir },
     stdio: ["ignore", "pipe", "pipe"],
@@ -2248,7 +2248,7 @@ test("deferred asks remain replyable after a broker restart", { concurrency: fal
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
 
-  const spawnBroker = () => spawn("npx", ["--no-install", "tsx", path.join(repoDir, "broker", "broker.ts")], {
+  const spawnBroker = () => spawn(process.execPath, ["--import", "tsx", path.join(repoDir, "broker", "broker.ts")], {
     cwd: repoDir,
     env: { ...process.env, HOME: sharedHomeDir, USERPROFILE: sharedHomeDir, PI_CODING_AGENT_DIR: agentDir },
     stdio: ["ignore", "pipe", "pipe"],
