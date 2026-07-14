@@ -1,6 +1,6 @@
 {
-  "name": "pi-intercom",
-  "version": "0.9.0",
+  "name": "@dataforxyz/agent-intercom-pi",
+  "version": "0.9.1",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "index.ts",
@@ -49,5 +49,8 @@
     "@earendil-works/pi-tui": "*",
     "typebox": "*",
     "typescript": "^5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
