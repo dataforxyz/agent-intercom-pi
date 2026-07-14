@@ -155,6 +155,15 @@ async function waitForBrokerReady(broker: ChildProcessWithoutNullStreams): Promi
   await ready;
 }
 
+async function stopBrokerProcess(broker: ChildProcessWithoutNullStreams): Promise<void> {
+  if (broker.exitCode !== null || broker.signalCode !== null) {
+    return;
+  }
+  const exited = once(broker, "exit").catch(() => undefined);
+  broker.kill("SIGTERM");
+  await exited;
+}
+
 async function withChildOrchestratorEnv<T>(metadata: {
   orchestratorTarget?: string;
   orchestratorSessionId?: string;
@@ -473,10 +482,7 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
       version: 3,
     }]);
   } finally {
-    if (broker.exitCode === null && broker.signalCode === null) {
-      broker.kill("SIGTERM");
-      await once(broker, "exit").catch(() => undefined);
-    }
+    await stopBrokerProcess(broker);
     rmSync(agentDir, { recursive: true, force: true });
   }
 });
@@ -516,13 +522,11 @@ async function setupClients() {
       cleanup: async () => {
         await planner.disconnect().catch(() => undefined);
         await orchestrator.disconnect().catch(() => undefined);
-        broker.kill("SIGTERM");
-        await once(broker, "exit").catch(() => undefined);
+        await stopBrokerProcess(broker);
       },
     };
   } catch (error) {
-    broker.kill("SIGTERM");
-    await once(broker, "exit").catch(() => undefined);
+    await stopBrokerProcess(broker);
     throw error;
   }
 }
@@ -2113,10 +2117,7 @@ test("durable sender outbox replays an accepted message after broker crash", { c
   } finally {
     await sender.disconnect().catch(() => undefined);
     await receiver.disconnect().catch(() => undefined);
-    if (broker.exitCode === null && broker.signalCode === null) {
-      broker.kill("SIGTERM");
-      await once(broker, "exit").catch(() => undefined);
-    }
+    await stopBrokerProcess(broker);
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     rmSync(agentDir, { recursive: true, force: true });
@@ -2264,8 +2265,7 @@ test("deferred asks remain replyable after a broker restart", { concurrency: fal
 
     const plannerDisconnected = once(planner, "disconnected");
     const orchestratorDisconnected = once(orchestrator, "disconnected");
-    broker.kill("SIGTERM");
-    await once(broker, "exit");
+    await stopBrokerProcess(broker);
     await Promise.all([plannerDisconnected, orchestratorDisconnected]);
 
     broker = spawnBroker();
@@ -2305,10 +2305,7 @@ test("deferred asks remain replyable after a broker restart", { concurrency: fal
   } finally {
     await planner.disconnect().catch(() => undefined);
     await orchestrator.disconnect().catch(() => undefined);
-    if (broker.exitCode === null && broker.signalCode === null) {
-      broker.kill("SIGTERM");
-      await once(broker, "exit").catch(() => undefined);
-    }
+    await stopBrokerProcess(broker);
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     rmSync(agentDir, { recursive: true, force: true });
