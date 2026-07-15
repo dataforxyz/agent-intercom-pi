@@ -8,6 +8,7 @@
 - Keep exact reply threading internal and expose the deprecated monolithic `intercom` tool only through explicit compatibility opt-in.
 - Preserve compact tool rendering, error propagation, stable sender targeting, and targeted validation for malformed legacy recipient fields.
 - Coordinate the Agent Intercom family on the `0.9.2` release line.
+- Declare canonical GitHub repository metadata for npm provenance verification.
 
 - Add CI for branches and pull requests, including a serialized integration-test mode for stable hosted-runner execution.
 - Fix hosted-runner test races by waiting for non-empty clipboard output, spawning broker test processes directly instead of through `npx`, and bounding cleanup with `SIGKILL` escalation.

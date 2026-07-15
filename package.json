@@ -44,14 +44,22 @@
     "tsx": "^4.20.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
+    "@types/node": "^22.15.0",
     "typebox": "*",
     "typescript": "^5.9.3"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dataforxyz/agent-intercom-pi.git"
+  },
+  "homepage": "https://github.com/dataforxyz/agent-intercom-pi#readme",
+  "bugs": {
+    "url": "https://github.com/dataforxyz/agent-intercom-pi/issues"
   }
 }
