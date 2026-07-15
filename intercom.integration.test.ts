@@ -1366,7 +1366,12 @@ test("continuous inbound traffic cannot postpone a batch past the maximum latenc
 
     assert.ok(harness.sentMessages.length >= 1, "the one-second maximum latency should flush before the stream goes quiet");
     await new Promise((resolve) => setTimeout(resolve, 400));
-    assert.equal(harness.sentMessages.length, 2);
+    assert.ok(harness.sentMessages.length >= 2, "the final messages should flush after the stream goes quiet");
+    const deliveredIds = harness.sentMessages.flatMap((delivered) => {
+      const details = delivered.message.details as { entries?: Array<{ message?: Message }> };
+      return details.entries?.map((entry) => entry.message?.id) ?? [];
+    });
+    assert.deepEqual(deliveredIds, Array.from({ length: 8 }, (_, index) => `bounded-batch-${index}`));
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();

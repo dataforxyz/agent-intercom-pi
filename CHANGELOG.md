@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make the continuous-traffic batch test tolerate legitimate extra quiet-window flushes while still proving bounded latency, complete delivery, and ordering.
+
 ## [0.9.2] - 2026-07-14
 
 - Replace the default monolithic model-facing Intercom schema with six focused plain-object tools: `intercom_send`, `intercom_ask`, `intercom_reply`, `intercom_list`, `intercom_pending`, and `intercom_status`.
