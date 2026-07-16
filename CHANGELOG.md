@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## [0.9.3] - 2026-07-15
+
 - Make the continuous-traffic batch test tolerate legitimate extra quiet-window flushes while still proving bounded latency, complete delivery, and ordering.
+- Coordinate the Agent Intercom family on the `0.9.3` release line.
 
 ## [0.9.2] - 2026-07-14
 
