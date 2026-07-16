@@ -62,7 +62,7 @@ intercom_send({
 })
 ```
 
-Use `ask` only when the next step genuinely depends on an answer. Completion and progress notifications should normally use `send` so they do not create an unnecessary wait edge.
+Use `ask` only when the next step genuinely depends on an answer. Keep at most one unresolved ask to the same recipient; the broker rejects a second one. Completion, follow-ups, and progress notifications should normally use `send` so they do not create an unnecessary wait edge.
 
 ### Pattern 2: Send Related Updates as a Burst
 
@@ -108,10 +108,10 @@ intercom_reply({
 
 // If replying later and there might be more than one pending ask:
 intercom_pending({})
-intercom_reply({ to: "planner", message: "Use exponential backoff starting at 100ms." })
+intercom_reply({ to: "planner", which: "oldest", message: "Use exponential backoff starting at 100ms." })
 ```
 
-`intercom_reply` preserves exact threading internally; models never see or construct the protocol message ID.
+`intercom_reply` preserves exact threading internally. `intercom_pending` labels same-sender asks as `oldest`/`latest`; models never see or construct the protocol message ID.
 
 ### Pattern 5: Broadcast to Multiple Workers
 

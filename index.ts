@@ -1696,7 +1696,10 @@ Usage:
         language: Type.Optional(Type.String()),
       }))),
       replyTo: Type.Optional(Type.String({
-        description: "Message ID to reply to (for threading or responding to an 'ask')",
+        description: "Message ID to reply to (legacy threading only)",
+      })),
+      which: Type.Optional(StringEnum(["oldest", "latest"] as const, {
+        description: "Select the oldest or latest unresolved ask when one sender has multiple pending asks",
       })),
     }),
 
@@ -1713,7 +1716,7 @@ Usage:
 
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
-      const { action, to, message, attachments, replyTo } = params;
+      const { action, to, message, attachments, replyTo, which } = params;
 
       switch (action) {
         case "list": {
@@ -1940,7 +1943,7 @@ Usage:
           }
 
           try {
-            const target = replyTracker.resolveReplyTarget({ to, replyTo });
+            const target = replyTracker.resolveReplyTarget({ to, replyTo, which });
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -1997,10 +2000,19 @@ Usage:
 
           const now = Date.now();
           const lines = pendingAsks.map(({ from, message, receivedAt, deferredAt }) => {
+            const sameSender = pendingAsks.filter((entry) => entry.from.id === from.id);
+            const senderIndex = sameSender.findIndex((entry) => entry.message.id === message.id);
+            const selector = sameSender.length <= 1
+              ? ""
+              : senderIndex === 0
+                ? " · oldest"
+                : senderIndex === sameSender.length - 1
+                  ? " · latest"
+                  : " · queued";
             const preview = message.content.text.replace(/\s+/g, " ").slice(0, 80);
             const elapsedSeconds = Math.max(0, Math.floor((now - receivedAt) / 1000));
             const state = deferredAt ? " · async" : "";
-            return `- ${from.name || from.id} · ${message.id} · ${elapsedSeconds}s ago${state} · ${preview}`;
+            return `- ${from.name || from.id}${selector} · ${elapsedSeconds}s ago${state} · ${preview}`;
           });
           return {
             content: [{ type: "text", text: `**Pending asks:**\n${lines.join("\n")}` }],
@@ -2123,10 +2135,11 @@ Usage:
     label: "Intercom Reply",
     description: "Reply to an inbound intercom message or ask. Exact protocol threading is resolved internally.",
     promptSnippet: "Reply to the active or pending inbound intercom message.",
-    promptGuidelines: ["Use intercom_reply to answer an inbound intercom message. Its optional `to` field selects a sender when multiple asks are pending; it is never a message or thread ID."],
+    promptGuidelines: ["Use intercom_reply to answer an inbound intercom message. Use `to` to select a sender and `which` as `oldest` or `latest` when that sender has multiple pending asks. Neither field is a message or thread ID."],
     parameters: Type.Object({
       message: Type.String({ description: "Required reply text" }),
-      to: Type.Optional(Type.String({ description: "Optional sender/session selector only when multiple pending asks need disambiguation; never a message or thread ID" })),
+      to: Type.Optional(Type.String({ description: "Optional sender/session selector when multiple senders or asks are pending; never a message or thread ID" })),
+      which: Type.Optional(StringEnum(["oldest", "latest"] as const, { description: "Select the oldest or latest ask when the chosen sender has multiple unresolved asks" })),
     }),
     execute: executeSplitAction("reply"),
     renderCall: renderSplitCall("reply"),

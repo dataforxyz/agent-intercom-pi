@@ -272,7 +272,7 @@ This matters because the agent receiving the message never needs to see or recon
 
 `intercom_ask` sends the message and waits up to 30 seconds for the recipient. A prompt reply comes back as the tool result, so the agent continues in the same turn with full context. If nobody replies within 30 seconds, the tool returns control without an error and keeps the request open asynchronously; a late reply arrives as a new intercom message. No confirmation dialog — if you're asking and waiting, the intent is clear.
 
-`intercom_reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom_reply({ message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use `intercom_pending({})` to inspect them and then call `intercom_reply` with `to` to select the sender.
+`intercom_reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom_reply({ message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use `intercom_pending({})`, select the sender with `to`, and use `which: "oldest"` or `which: "latest"` when that sender has more than one unresolved ask.
 
 The planner typically uses `send`. If you prefer manual approval for outgoing non-reply messages, turn on `confirmSend: true`. The worker uses `ask` for everything (no confirmation needed, gets answers inline), so it can operate autonomously either way.
 
@@ -376,7 +376,7 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 |------|------------|-------------|
 | `intercom_send` | required `to`, required `message`, optional `attachments` | Fire-and-forget delivery |
 | `intercom_ask` | required `to`, required `message`, optional `attachments` | Ask and wait briefly for a reply |
-| `intercom_reply` | required `message`, optional `to` | Reply to the active or pending inbound message; `to` selects a sender when multiple asks are pending |
+| `intercom_reply` | required `message`, optional `to`, `which` | Reply to the active or pending inbound message; `to` selects a sender and `which` selects that sender's oldest/latest unresolved ask |
 | `intercom_team` | none | Show the current manager and live coworkers owned by that manager |
 | `intercom_list` | none | List connected sessions globally |
 | `intercom_pending` | none | List unresolved inbound asks |
@@ -410,7 +410,9 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`intercom_ask`** waits up to 30 seconds for a prompt reply, then returns a successful pending result while keeping the request open for a late reply. `PI_INTERCOM_ASK_WAIT_MS` changes the blocking window.
 
-**`intercom_reply`** resolves the active or pending inbound context internally. Pass optional `to` only to select a sender when multiple asks are pending; it is never a thread or message ID. If multiple unresolved asks from the same sender remain after their original turns, sender-only disambiguation is intentionally unavailable; answer them while their inbound turn context is active or ask the sender to resend the specific question.
+**`intercom_reply`** resolves the active or pending inbound context internally. Pass optional `to` to select a sender and `which: "oldest" | "latest"` when that sender has multiple unresolved asks. Neither field is a thread or message ID. `intercom_pending` labels same-sender asks as oldest/latest without exposing protocol IDs.
+
+The broker refuses a second unresolved `intercom_ask` from one session to the same recipient. Wait for the first answer or use `intercom_send` for a non-blocking follow-up.
 
 **`intercom_pending`** lists unresolved inbound asks with sender, elapsed time, and a preview.
 

@@ -648,6 +648,13 @@ class IntercomBroker {
             break;
           }
           if (message.expectsReply) {
+            const existingAsk = Array.from(this.askEdges.values()).find((edge) =>
+              edge.from === currentId && edge.to === target.info.id
+            );
+            if (existingAsk) {
+              this.sendDeliveryFailure(socket, message.id, false, "ASK_ALREADY_PENDING", "Another ask to this session is still unresolved. Wait for its reply or use intercom_send for a non-blocking follow-up.");
+              break;
+            }
             const reverseEdge = Array.from(this.askEdges.values()).find((edge) =>
               edge.state === "blocking"
               && !(message.replyTo === edge.messageId && target.info.id === edge.from)

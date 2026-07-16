@@ -124,6 +124,16 @@ test("reply errors when multiple pending asks and no to", () => {
   assert.throws(() => tracker.resolveReplyTarget({}, 1002), /Multiple pending asks — specify `to`/);
 });
 
+test("reply selects the oldest or latest ask from the same sender without exposing message IDs", () => {
+  const tracker = new ReplyTracker();
+  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "First"), 1000);
+  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-2", "Second"), 1001);
+
+  assert.throws(() => tracker.resolveReplyTarget({ to: "planner" }, 1002), /specify `which`/);
+  assert.equal(tracker.resolveReplyTarget({ to: "planner", which: "oldest" }, 1002).message.id, "ask-1");
+  assert.equal(tracker.resolveReplyTarget({ to: "planner", which: "latest" }, 1002).message.id, "ask-2");
+});
+
 test("reply removes pending ask after successful reply", () => {
   const tracker = new ReplyTracker();
   tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);

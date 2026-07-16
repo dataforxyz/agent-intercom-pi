@@ -905,6 +905,12 @@ test("stable-ID replacement defers old ask edges and ignores stale cancels", { c
       replyTo: "reverse-after-replace",
     })).delivered, true);
 
+    const oldAskReply = await orchestrator.send("replaceable-asker-id", {
+      text: "Old ask answered after replacement.",
+      replyTo: "old-ask-edge",
+    });
+    assert.equal(oldAskReply.delivered, true);
+
     const replacementAsk = await replacement.send(orchestrator.sessionId!, {
       messageId: "replacement-ask-edge",
       text: "Replacement ask",
@@ -1027,6 +1033,7 @@ test("split intercom tools are the default model-facing schema", { concurrency: 
     assert.deepEqual((schemas.intercom_send as { required?: string[] }).required, ["to", "message"]);
     assert.deepEqual((schemas.intercom_ask as { required?: string[] }).required, ["to", "message"]);
     assert.deepEqual((schemas.intercom_reply as { required?: string[] }).required, ["message"]);
+    assert.ok((schemas.intercom_reply as { properties?: Record<string, unknown> }).properties?.which);
     assert.doesNotMatch(JSON.stringify(schemas), /replyTo|reply_to/);
     assert.equal(harness.tools.some((tool) => tool.name === "intercom"), false);
   } finally {
@@ -1381,7 +1388,7 @@ test("continuous inbound traffic cannot postpone a batch past the maximum latenc
 
 test("multiple asks in one delivered batch require an explicit reply target", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
-  const { planner, cleanup } = await setupClients();
+  const { planner, orchestrator, cleanup } = await setupClients();
   const harness = createExtensionHarness("multi-ask-worker", {
     hasUI: true,
     isIdle: () => true,
@@ -1394,7 +1401,7 @@ test("multiple asks in one delivered batch require an explicit reply target", { 
     const target = await waitForSessionByName(planner, "multi-ask-worker");
     await Promise.all([
       planner.send(target.id, { messageId: "multi-ask-1", text: "Choose the first option?", expectsReply: true }),
-      planner.send(target.id, { messageId: "multi-ask-2", text: "Choose the second option?", expectsReply: true }),
+      orchestrator.send(target.id, { messageId: "multi-ask-2", text: "Choose the second option?", expectsReply: true }),
     ]);
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.equal(harness.sentMessages.length, 1);
@@ -2020,6 +2027,46 @@ test("regular asks continue asynchronously after the blocking wait and still acc
   }
 });
 
+test("broker refuses a second unresolved ask to the same session", { concurrency: false }, async () => {
+  const { planner, orchestrator, cleanup } = await setupClients();
+
+  try {
+    const firstAsk = await planner.send(orchestrator.sessionId!, {
+      messageId: "planner-first-ask",
+      text: "First decision?",
+      expectsReply: true,
+    });
+    assert.equal(firstAsk.delivered, true);
+
+    const secondAsk = await planner.send(orchestrator.sessionId!, {
+      messageId: "planner-second-ask",
+      text: "Second decision?",
+      expectsReply: true,
+    });
+    assert.equal(secondAsk.delivered, false);
+    assert.equal(secondAsk.code, "ASK_ALREADY_PENDING");
+    assert.match(secondAsk.reason ?? "", /intercom_send/);
+
+    const plainSend = await planner.send(orchestrator.sessionId!, { text: "Non-blocking follow-up." });
+    assert.equal(plainSend.delivered, true);
+
+    const reply = await orchestrator.send(planner.sessionId!, {
+      text: "First answer.",
+      replyTo: "planner-first-ask",
+    });
+    assert.equal(reply.delivered, true);
+
+    const nextAsk = await planner.send(orchestrator.sessionId!, {
+      messageId: "planner-next-ask",
+      text: "Now may I ask again?",
+      expectsReply: true,
+    });
+    assert.equal(nextAsk.delivered, true);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("broker refuses reverse mutual asks until the original ask is answered", { concurrency: false }, async () => {
   const { planner, orchestrator, cleanup } = await setupClients();
 
@@ -2456,7 +2503,7 @@ test("deferred asks remain replyable after a broker restart", { concurrency: fal
   }
 });
 
-test("a reply can start a new reverse ask", { concurrency: false }, async () => {
+test("a reply can start one reverse ask but a second unresolved ask is refused", { concurrency: false }, async () => {
   const { planner, orchestrator, cleanup } = await setupClients();
 
   try {
@@ -2480,7 +2527,8 @@ test("a reply can start a new reverse ask", { concurrency: false }, async () => 
       text: "Can I ask another before the first is answered?",
       expectsReply: true,
     });
-    assert.equal(duplicateReverseAsk.delivered, true);
+    assert.equal(duplicateReverseAsk.delivered, false);
+    assert.equal(duplicateReverseAsk.code, "ASK_ALREADY_PENDING");
 
     const plannerReverseAsk = await planner.send(orchestrator.sessionId!, {
       messageId: "planner-reverse-while-orchestrator-waits",
@@ -2715,8 +2763,9 @@ test("intercom reply targets exact replyTo when multiple asks are pending", { co
     assert.equal(reply.message.content.text, "Second answer.");
 
     const pending = await intercomTool.execute("pending-after-exact", { action: "pending" }, new AbortController().signal, undefined, harness.ctx);
-    assert.match(pending.content[0]?.text ?? "", /reply-target-1/);
-    assert.doesNotMatch(pending.content[0]?.text ?? "", /reply-target-2/);
+    assert.match(pending.content[0]?.text ?? "", /First\?/);
+    assert.doesNotMatch(pending.content[0]?.text ?? "", /reply-target-1|reply-target-2/);
+    assert.doesNotMatch(pending.content[0]?.text ?? "", /Second\?/);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();

@@ -8,6 +8,8 @@ export interface IntercomContext {
   deferredAt?: number;
 }
 
+export type ReplyWhich = "oldest" | "latest";
+
 function matchesPendingSender(context: IntercomContext, to: string): boolean {
   if (context.from.id === to) {
     return true;
@@ -18,6 +20,15 @@ function matchesPendingSender(context: IntercomContext, to: string): boolean {
 
 function contextKey(fromSessionId: string, messageId: string): string {
   return `${fromSessionId}\u0000${messageId}`;
+}
+
+function selectByAge(contexts: IntercomContext[], which: ReplyWhich): IntercomContext {
+  const sorted = [...contexts].sort((a, b) => a.receivedAt - b.receivedAt);
+  return which === "oldest" ? sorted[0]! : sorted[sorted.length - 1]!;
+}
+
+function distinctSenders(contexts: IntercomContext[]): number {
+  return new Set(contexts.map((context) => context.from.id)).size;
 }
 
 export class ReplyTracker {
@@ -67,7 +78,7 @@ export class ReplyTracker {
     this.currentTurnContexts = [];
   }
 
-  resolveReplyTarget(options: { to?: string; replyTo?: string }, now = Date.now()): IntercomContext {
+  resolveReplyTarget(options: { to?: string; replyTo?: string; which?: ReplyWhich }, now = Date.now()): IntercomContext {
     this.pruneExpired(now);
 
     if (options.replyTo) {
@@ -94,7 +105,11 @@ export class ReplyTracker {
         return replyableMatches[0]!;
       }
       if (replyableMatches.length > 1) {
-        throw new Error("Multiple asks are active in this intercom batch — specify `to` to select the sender");
+        if (!options.to && distinctSenders(replyableMatches) > 1) {
+          throw new Error("Multiple asks are active in this intercom batch — specify `to` to select the sender");
+        }
+        if (options.which) return selectByAge(replyableMatches, options.which);
+        throw new Error("Multiple asks from the selected sender are active — specify `which` as `oldest` or `latest`");
       }
       if (turnMatches.length === 1) {
         return turnMatches[0]!;
@@ -109,24 +124,23 @@ export class ReplyTracker {
       return pending[0]!;
     }
 
-    if (options.to) {
-      const matches = pending.filter((context) => matchesPendingSender(context, options.to!));
-      if (matches.length === 1) {
-        return matches[0]!;
+    const matches = options.to
+      ? pending.filter((context) => matchesPendingSender(context, options.to!))
+      : pending;
+    if (matches.length === 1) return matches[0]!;
+    if (matches.length > 1) {
+      if (!options.to && distinctSenders(matches) > 1) {
+        throw new Error("Multiple pending asks — specify `to` using a sender from `intercom_pending`");
       }
-      if (matches.length > 1) {
-        throw new Error(`Multiple pending asks from \"${options.to}\" cannot be disambiguated by sender alone`);
-      }
-      if (pending.length > 1) {
-        throw new Error(`No pending ask from \"${options.to}\"`);
-      }
+      if (options.which) return selectByAge(matches, options.which);
+      const sender = options.to ? ` from \"${options.to}\"` : "";
+      throw new Error(`Multiple pending asks${sender} — specify \`which\` as \`oldest\` or \`latest\``);
     }
-
     if (pending.length === 0) {
       throw new Error("No active intercom context to reply to");
     }
-
-    throw new Error("Multiple pending asks — specify `to` using a sender from `intercom_pending`");
+    if (options.to) throw new Error(`No pending ask from \"${options.to}\"`);
+    throw new Error("No matching pending ask");
   }
 
   markReplied(replyTo: string, fromSessionId?: string): void {
