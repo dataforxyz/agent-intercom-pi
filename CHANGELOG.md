@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the no-argument `intercom_team` tool for manager and same-manager coworker discovery with adoption-safe dynamic ownership lookup.
+
 ## [0.9.3] - 2026-07-15
 
 - Make the continuous-traffic batch test tolerate legitimate extra quiet-window flushes while still proving bounded latency, complete delivery, and ordering.

@@ -76,16 +76,27 @@ intercom_send({ to: "planner", message: "See src/client.ts:88." })
 
 Do not add artificial sleeps to form a batch. Each original message keeps its sender, ID, attachments, timestamp, and reply context.
 
-### Pattern 3: Quick Status Check
+### Pattern 3: Find Your Manager or Team
 
-Before sending, verify who's connected:
+Orchestrator-owned coworkers should use the no-argument team tool instead of searching the global peer list:
+
+```typescript
+intercom_team({})
+// → Manager target plus live coworkers owned by that manager
+```
+
+Use the returned manager target directly with `intercom_send` or `intercom_ask`. The manager follows adoption dynamically.
+
+### Pattern 4: Global Status Check
+
+Use the global list only when you need independently launched peers:
 
 ```typescript
 intercom_list({})
 // → Shows all connected sessions with names, cwd, models, and live status (`idle`, `thinking`, `tool:<name>`)
 ```
 
-### Pattern 4: Reply Naturally
+### Pattern 5: Reply Naturally
 
 When responding to an inbound ask, prefer `reply` instead of reconstructing raw IDs:
 
@@ -198,7 +209,7 @@ intercom_reply({ to: "subagent-worker-78f659a3-1", message: "Use the v2 API." })
 
 **Important:** Only sessions where `pi-subagents` supplied child bridge metadata
 get the `contact_supervisor` tool. Normal sessions use the split `intercom_send`,
-`intercom_ask`, `intercom_reply`, `intercom_list`, `intercom_pending`, and
+`intercom_ask`, `intercom_reply`, `intercom_team`, `intercom_list`, `intercom_pending`, and
 `intercom_status` tools. If you see the formatted supervisor decision/progress update message, treat
 it as a `contact_supervisor` escalation.
 

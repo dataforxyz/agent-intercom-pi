@@ -129,10 +129,16 @@ Press **Alt+I** or run `/intercom-id` to copy a short handoff snippet for the cu
 
 ### From the Agent
 
-The agent uses six focused tools: `intercom_send`, `intercom_ask`, `intercom_reply`, `intercom_list`, `intercom_pending`, and `intercom_status`. Tool calls and results render as compact transcript rows so send/ask/reply flows are easy to scan. For common patterns like planner-worker delegation, the bundled `pi-intercom` skill provides copy-paste ready examples:
+The agent uses seven focused tools: `intercom_send`, `intercom_ask`, `intercom_reply`, `intercom_team`, `intercom_list`, `intercom_pending`, and `intercom_status`. Tool calls and results render as compact transcript rows so coordination is easy to scan. For common patterns like planner-worker delegation, the bundled `pi-intercom` skill provides copy-paste ready examples:
 
 ```typescript
-// List active sessions
+// Find the manager and managed coworkers without searching the global list
+intercom_team({})
+// → Manager: manager-id [connected]
+// → You: reviewer
+// → Coworkers: builder target=builder (codex, builder, running) [connected]
+
+// List all active sessions
 intercom_list({})
 // → **Current session:**
 // → • executor (20d43841) — ~/projects/api (claude-sonnet-4) [self, idle]
@@ -371,7 +377,8 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 | `intercom_send` | required `to`, required `message`, optional `attachments` | Fire-and-forget delivery |
 | `intercom_ask` | required `to`, required `message`, optional `attachments` | Ask and wait briefly for a reply |
 | `intercom_reply` | required `message`, optional `to` | Reply to the active or pending inbound message; `to` selects a sender when multiple asks are pending |
-| `intercom_list` | none | List connected sessions |
+| `intercom_team` | none | Show the current manager and live coworkers owned by that manager |
+| `intercom_list` | none | List connected sessions globally |
 | `intercom_pending` | none | List unresolved inbound asks |
 | `intercom_status` | none | Show connection and queue status |
 
@@ -395,7 +402,9 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ### Tool behavior
 
-**`intercom_list`** returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status.
+**`intercom_team`** reads orchestrator ownership dynamically and returns the current manager plus live same-manager coworkers. After adoption it follows the new manager without restarting the worker; `AGENT_INTERCOM_MANAGER_TARGET` is only a startup fallback.
+
+**`intercom_list`** returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. It is global, so orchestrator-owned workers should prefer `intercom_team` for their group.
 
 **`intercom_send`** sends immediately and distinguishes broker `accepted` from receiver-acknowledged `delivered`. Set `confirmSend: true` for an interactive confirmation dialog.
 

@@ -14,6 +14,7 @@ import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "
 import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { InboundMessageConflictError, PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
+import { formatIntercomTeam, resolveIntercomTeam } from "./team.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -1378,6 +1379,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     "intercom_list",
     "intercom_pending",
     "intercom_status",
+    "intercom_team",
     "contact_supervisor",
   ]);
 
@@ -2129,6 +2131,35 @@ Usage:
     execute: executeSplitAction("reply"),
     renderCall: renderSplitCall("reply"),
     renderResult: renderSplitResult,
+  } as any);
+
+  pi.registerTool({
+    name: "intercom_team",
+    label: "Intercom Team",
+    description: "Show your current manager and the live coworkers owned by that manager. No arguments are required.",
+    promptSnippet: "Find your manager and managed coworkers without searching the global peer list.",
+    promptGuidelines: ["Use intercom_team whenever you need your manager's target or the other coworkers in your managed group."],
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      try {
+        const connectedClient = await ensureConnected("tool");
+        syncPresenceIdentity(ctx.sessionManager.getSessionId());
+        const sessions = await connectedClient.listSessions();
+        const team = await resolveIntercomTeam({ selfId: connectedClient.sessionId, sessions });
+        return { content: [{ type: "text", text: formatIntercomTeam(team) }], details: team };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Failed to resolve intercom team: ${getErrorMessage(error)}` }], details: { error: true } };
+      }
+    },
+    renderCall(_args, theme) {
+      return new Text(theme.fg("toolTitle", theme.bold("intercom_team")), 0, 0);
+    },
+    renderResult(result, { isPartial }, theme, context) {
+      if (isPartial) return new Text(theme.fg("warning", "Resolving team..."), 0, 0);
+      const details = result.details as { error?: boolean } | undefined;
+      const failed = Boolean(context.isError || details?.error === true);
+      return new Text(`${failed ? theme.fg("error", "✗ ") : theme.fg("success", "✓ ")}${theme.fg(failed ? "error" : "text", firstTextContent(result))}`, 0, 0);
+    },
   } as any);
 
   for (const definition of [

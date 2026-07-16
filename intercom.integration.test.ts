@@ -1017,6 +1017,7 @@ test("split intercom tools are the default model-facing schema", { concurrency: 
       "intercom_send",
       "intercom_ask",
       "intercom_reply",
+      "intercom_team",
       "intercom_list",
       "intercom_pending",
       "intercom_status",
@@ -1077,7 +1078,7 @@ test("intercom tool result hook marks failed details as errors", async () => {
   const harness = createExtensionHarness();
   piIntercomExtension(harness.pi as never);
 
-  for (const toolName of ["intercom", "intercom_send", "intercom_ask", "intercom_reply", "intercom_list", "intercom_pending", "intercom_status"]) {
+  for (const toolName of ["intercom", "intercom_send", "intercom_ask", "intercom_reply", "intercom_team", "intercom_list", "intercom_pending", "intercom_status"]) {
     const errorResults = await harness.emitLifecycleResults("tool_result", {
       toolName,
       details: { error: true },
@@ -1620,6 +1621,7 @@ test("supervisor tool registers only when child metadata is present", async () =
       "intercom_send",
       "intercom_ask",
       "intercom_reply",
+      "intercom_team",
       "intercom_list",
       "intercom_pending",
       "intercom_status",
@@ -1641,6 +1643,7 @@ test("supervisor tool registers only when child metadata is present", async () =
       "intercom_send",
       "intercom_ask",
       "intercom_reply",
+      "intercom_team",
       "intercom_list",
       "intercom_pending",
       "intercom_status",
