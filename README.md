@@ -270,11 +270,11 @@ This matters because the agent receiving the message never needs to see or recon
 
 `intercom_send` is non-blocking with respect to a reply: it waits only for the receiver's durable-enqueue acknowledgement, then returns. By default, it sends immediately even in interactive sessions. If you want an approval dialog before non-reply sends, set `confirmSend: true` in config. `intercom_reply` skips confirmation so reply-hint flows can continue without an extra approval step.
 
-`intercom_ask` sends the message and waits up to 30 seconds for the recipient. A prompt reply comes back as the tool result, so the agent continues in the same turn with full context. If nobody replies within 30 seconds, the tool returns control without an error and keeps the request open asynchronously; a late reply arrives as a new intercom message. No confirmation dialog — if you're asking and waiting, the intent is clear.
+`intercom_ask` sends a genuinely blocking question and waits up to 30 seconds for the recipient. A prompt reply comes back as the tool result, so the agent continues in the same turn with full context. If nobody replies within 30 seconds, the tool returns control without an error and keeps the request open asynchronously; a late reply arrives as a new intercom message. Different recipients may be asked concurrently, but only one unresolved ask per recipient is allowed. Use `intercom_send` for assignments, progress/status checkpoints, notifications, and follow-ups.
 
 `intercom_reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom_reply({ message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use `intercom_pending({})`, select the sender with `to`, and use `which: "oldest"` or `which: "latest"` when that sender has more than one unresolved ask.
 
-The planner typically uses `send`. If you prefer manual approval for outgoing non-reply messages, turn on `confirmSend: true`. The worker uses `ask` for everything (no confirmation needed, gets answers inline), so it can operate autonomously either way.
+The planner typically uses `send`. If you prefer manual approval for outgoing non-reply messages, turn on `confirmSend: true`. Workers should also use `send` for progress and completion, reserving `ask` for decisions they cannot safely continue without.
 
 ## Workflow: Subagent-to-Supervisor Escalation
 
@@ -408,13 +408,13 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`intercom_send`** sends immediately and distinguishes broker `accepted` from receiver-acknowledged `delivered`. Set `confirmSend: true` for an interactive confirmation dialog.
 
-**`intercom_ask`** waits up to 30 seconds for a prompt reply, then returns a successful pending result while keeping the request open for a late reply. `PI_INTERCOM_ASK_WAIT_MS` changes the blocking window.
+**`intercom_ask`** waits up to 30 seconds for a prompt reply, then returns a successful pending result while keeping the request open for a late reply. Different recipients may wait concurrently; the same recipient may have only one unresolved ask. `PI_INTERCOM_ASK_WAIT_MS` changes the blocking window.
 
 **`intercom_reply`** resolves the active or pending inbound context internally. Pass optional `to` to select a sender and `which: "oldest" | "latest"` when that sender has multiple unresolved asks. Neither field is a thread or message ID. `intercom_pending` labels same-sender asks as oldest/latest without exposing protocol IDs.
 
 The broker refuses a second unresolved `intercom_ask` from one session to the same recipient. Wait for the first answer or use `intercom_send` for a non-blocking follow-up.
 
-**`intercom_pending`** lists unresolved inbound asks with sender, elapsed time, and a preview.
+**`intercom_pending`** lists unresolved inbound asks waiting for this session's reply, with sender, elapsed time, and a preview. It does not list outbound asks sent to coworkers.
 
 **`intercom_status`** shows connection, session, queue, and pending-ask status.
 

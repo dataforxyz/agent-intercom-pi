@@ -1971,6 +1971,36 @@ test("regular intercom asks fail safely when started concurrently", { concurrenc
   }
 });
 
+test("regular intercom asks can wait concurrently on different recipients", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, orchestrator, cleanup } = await setupClients();
+
+  try {
+    const harness = createExtensionHarness("parallel-ask-worker");
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await waitForSessionByName(orchestrator, "parallel-ask-worker");
+    const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+
+    const plannerMessage = once(planner, "message") as Promise<[SessionInfo, Message]>;
+    const orchestratorMessage = once(orchestrator, "message") as Promise<[SessionInfo, Message]>;
+    const askPlanner = intercomTool.execute("ask-planner", { action: "ask", to: "planner", message: "Planner?" }, new AbortController().signal, undefined, harness.ctx);
+    const askOrchestrator = intercomTool.execute("ask-orchestrator", { action: "ask", to: "orchestrator", message: "Orchestrator?" }, new AbortController().signal, undefined, harness.ctx);
+
+    const [[plannerFrom, plannerAsk], [orchestratorFrom, orchestratorAsk]] = await Promise.all([plannerMessage, orchestratorMessage]);
+    assert.equal((await planner.send(plannerFrom.id, { text: "Planner answer.", replyTo: plannerAsk.id })).delivered, true);
+    assert.equal((await orchestrator.send(orchestratorFrom.id, { text: "Orchestrator answer.", replyTo: orchestratorAsk.id })).delivered, true);
+
+    const results = await Promise.all([askPlanner, askOrchestrator]);
+    assert.equal(results.every((result) => result.details?.error !== true), true);
+    assert.equal(results.some((result) => /Planner answer/.test(result.content[0]?.text ?? "")), true);
+    assert.equal(results.some((result) => /Orchestrator answer/.test(result.content[0]?.text ?? "")), true);
+    await harness.emitLifecycle("session_shutdown");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("regular asks continue asynchronously after the blocking wait and still accept late replies", { concurrency: false }, async () => {
   const previousAskWait = process.env.PI_INTERCOM_ASK_WAIT_MS;
   process.env.PI_INTERCOM_ASK_WAIT_MS = "25";

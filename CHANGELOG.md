@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add ID-free `oldest`/`latest` selection for multiple pending asks from one sender, hide protocol IDs from pending output, and refuse a second unresolved ask to the same recipient.
+- Allow independent blocking asks to wait concurrently across different recipients while retaining one unresolved ask per recipient, and clarify that progress/status checkpoints use `intercom_send`.
 
 ## 0.10.0 - 2026-07-16
 

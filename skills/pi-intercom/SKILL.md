@@ -62,7 +62,7 @@ intercom_send({
 })
 ```
 
-Use `ask` only when the next step genuinely depends on an answer. Keep at most one unresolved ask to the same recipient; the broker rejects a second one. Completion, follow-ups, and progress notifications should normally use `send` so they do not create an unnecessary wait edge.
+Use `ask` only when the next step genuinely depends on an answer. Keep at most one unresolved ask to the same recipient; the broker rejects a second one. Different recipients may be asked concurrently when their answers are genuinely blocking. Assignments, completion notices, follow-ups, progress requests, and status checkpoints should use `send` so they do not create unnecessary wait edges.
 
 ### Pattern 2: Send Related Updates as a Burst
 
@@ -322,7 +322,7 @@ If neither `cmux` nor `tmux` is available, skip this path and use normal `interc
 
 - **30-second soft wait**: If no reply arrives, the tool returns a successful pending result and the agent continues
 - **10-minute reply window**: The recipient can still answer later; the reply arrives as a new intercom message
-- **One synchronous wait at a time**: Another ask can start after the soft wait releases the current one
+- **One synchronous wait per recipient**: Independent recipients may be asked concurrently, but a second unresolved ask to the same recipient is rejected
 - **Deferred is not cancelled**: After the soft wait, reverse asks are allowed and the original request stays late-replyable, including across broker restart
 - **Cannot self-target**: A session cannot ask itself
 
@@ -402,11 +402,12 @@ Use `/name` so others can target you easily:
 
 **"Already waiting for a reply"**
 ```typescript
-// You can only have one pending ask at a time
-// Option 1: Use send instead
-intercom_send({ to: "planner", message: "..." });
+// You already have an unresolved ask to this recipient.
+// Use send for a non-blocking follow-up or progress/status request.
+intercom_send({ to: "planner", message: "Additional context for the open question." });
 
-// Option 2: Wait for current ask to complete first
+// Or wait for the current ask to resolve before asking another question.
+// Asks to a different recipient may proceed concurrently.
 ```
 
 **"Cannot message the current session"**

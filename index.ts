@@ -599,29 +599,30 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let inboundFirstQueuedAt: number | null = null;
   let inboundLastQueuedAt: number | null = null;
   let inboundFlushTimer: NodeJS.Timeout | null = null;
-  let replyWaiter: {
+  const replyWaiters = new Map<string, {
     from: string;
     replyTo: string;
     resolve: (message: Message) => void;
     reject: (error: Error) => void;
-  } | null = null;
+  }>();
+  function hasReplyWaiterForTarget(from: string): boolean {
+    return Array.from(replyWaiters.values()).some((waiter) => waiter.from.toLowerCase() === from.toLowerCase());
+  }
   function waitForReply(from: string, replyTo: string, signal?: AbortSignal, onCancel?: () => void): Promise<Message> {
-    if (replyWaiter) {
-      return Promise.reject(new Error("Already waiting for a reply"));
+    if (hasReplyWaiterForTarget(from)) {
+      return Promise.reject(new Error(`Already waiting for a reply from "${from}"`));
     }
     if (signal?.aborted) {
       return Promise.reject(new Error("Cancelled"));
     }
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        rejectReplyWaiter(new AskWaitElapsedError(from, replyTo, askWaitMs));
+        rejectReplyWaiter(replyTo, new AskWaitElapsedError(from, replyTo, askWaitMs));
       }, askWaitMs);
       const cleanup = () => {
         clearTimeout(timeout);
         signal?.removeEventListener("abort", onAbort);
-        if (replyWaiter?.replyTo === replyTo) {
-          replyWaiter = null;
-        }
+        replyWaiters.delete(replyTo);
       };
       const onAbort = () => {
         onCancel?.();
@@ -629,7 +630,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         reject(new Error("Cancelled"));
       };
       signal?.addEventListener("abort", onAbort, { once: true });
-      replyWaiter = {
+      replyWaiters.set(replyTo, {
         from,
         replyTo,
         resolve: (message) => {
@@ -640,11 +641,16 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           cleanup();
           reject(error);
         },
-      };
+      });
     });
   }
-  function rejectReplyWaiter(error: Error): void {
-    replyWaiter?.reject(error);
+  function rejectReplyWaiter(replyTo: string, error: Error): void {
+    replyWaiters.get(replyTo)?.reject(error);
+  }
+  function rejectAllReplyWaiters(error: Error): void {
+    for (const waiter of Array.from(replyWaiters.values())) {
+      waiter.reject(error);
+    }
   }
   function clearReconnectTimer(): void {
     if (!reconnectTimer) {
@@ -923,12 +929,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     receivingClient.acknowledgeMessage(deliveryId);
     if (enqueued.duplicate) return;
 
+    const replyWaiter = message.replyTo ? replyWaiters.get(message.replyTo) : undefined;
     if (replyWaiter) {
       const senderTarget = from.name || from.id;
       const fromMatches = senderTarget.toLowerCase() === replyWaiter.from.toLowerCase()
         || from.id === replyWaiter.from;
-      const replyMatches = message.replyTo === replyWaiter.replyTo;
-      if (fromMatches && replyMatches) {
+      if (fromMatches) {
         replyWaiter.resolve(message);
         inboxAtReceive.consume([enqueued.entry.key]);
         refreshInboundBatchWindow();
@@ -982,7 +988,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (client !== nextClient) {
         return;
       }
-      rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
+      rejectAllReplyWaiters(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
       client = null;
       if (!shuttingDown && !disposed) {
         clearReconnectTimer();
@@ -1140,7 +1146,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     clearStartupConnectTimer();
     clearNamePollTimer();
     clearInboundFlushTimer();
-    rejectReplyWaiter(new Error("Session replaced"));
+    rejectAllReplyWaiters(new Error("Session replaced"));
     replyTracker.reset();
     runtimeContext = ctx;
     currentSessionId = ctx.sessionManager.getSessionId();
@@ -1276,7 +1282,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     clearReconnectTimer();
     clearNamePollTimer();
     restoreIntercomSessionId();
-    rejectReplyWaiter(new Error("Session shutting down"));
+    rejectAllReplyWaiters(new Error("Session shutting down"));
     replyTracker.reset();
     clearInboundFlushTimer();
     inboundInbox = null;
@@ -1530,20 +1536,21 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           }
         }
 
-        if (replyWaiter) {
+        if (hasReplyWaiterForTarget(sendTo)) {
           return {
-            content: [{ type: "text", text: "Already waiting for a reply" }],
+            content: [{ type: "text", text: `Already waiting for a reply from "${metadata.orchestratorTarget}"` }],
             details: { error: true },
           };
         }
 
         let replyPromise: Promise<Message> | null = null;
+        let questionId: string | null = null;
         try {
-          const questionId = randomUUID();
-          replyPromise = waitForReply(sendTo, questionId, signal, () => { void connectedClient.cancelAsk(questionId); });
+          questionId = randomUUID();
+          replyPromise = waitForReply(sendTo, questionId, signal, () => { void connectedClient.cancelAsk(questionId!); });
           replyPromise.catch(() => undefined);
           if (signal?.aborted) {
-            rejectReplyWaiter(new Error("Cancelled"));
+            rejectReplyWaiter(questionId, new Error("Cancelled"));
             try {
               await replyPromise;
             } catch {
@@ -1564,7 +1571,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           });
           if (!sendResult.delivered) {
             const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
-            rejectReplyWaiter(new Error(`Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}`));
+            rejectReplyWaiter(questionId, new Error(`Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}`));
             if (replyPromise) {
               try {
                 await replyPromise;
@@ -1613,7 +1620,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           if (error instanceof AskWaitElapsedError) {
             return deferredAskResult(metadata.orchestratorTarget, error, await connectedClient.deferAsk(error.replyTo));
           }
-          rejectReplyWaiter(toError(error));
+          if (questionId) rejectReplyWaiter(questionId, toError(error));
           if (replyPromise) {
             try {
               await replyPromise;
@@ -1833,13 +1840,6 @@ Usage:
             };
           }
 
-          if (replyWaiter) {
-            return {
-              content: [{ type: "text", text: "Already waiting for a reply" }],
-              details: { error: true },
-            };
-          }
-
           if (_signal?.aborted) {
             return {
               content: [{ type: "text", text: "Cancelled" }],
@@ -1847,6 +1847,7 @@ Usage:
             };
           }
           let replyPromise: Promise<Message> | null = null;
+          let questionId: string | null = null;
 
           try {
             const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
@@ -1862,14 +1863,14 @@ Usage:
                 details: { error: true },
               };
             }
-            if (replyWaiter) {
+            if (hasReplyWaiterForTarget(sendTo)) {
               return {
-                content: [{ type: "text", text: "Already waiting for a reply" }],
+                content: [{ type: "text", text: `Already waiting for a reply from "${to}"` }],
                 details: { error: true },
               };
             }
-            const questionId = randomUUID();
-            replyPromise = waitForReply(sendTo, questionId, _signal, () => { void connectedClient.cancelAsk(questionId); });
+            questionId = randomUUID();
+            replyPromise = waitForReply(sendTo, questionId, _signal, () => { void connectedClient.cancelAsk(questionId!); });
             replyPromise.catch(() => undefined);
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
@@ -1881,7 +1882,7 @@ Usage:
 
             if (!sendResult.delivered) {
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
-              rejectReplyWaiter(new Error(`Message to "${to}" was not delivered: ${errorText}`));
+              rejectReplyWaiter(questionId, new Error(`Message to "${to}" was not delivered: ${errorText}`));
               if (replyPromise) {
                 try {
                   await replyPromise;
@@ -1919,7 +1920,7 @@ Usage:
             if (error instanceof AskWaitElapsedError) {
               return deferredAskResult(to, error, await connectedClient.deferAsk(error.replyTo));
             }
-            rejectReplyWaiter(toError(error));
+            if (questionId) rejectReplyWaiter(questionId, toError(error));
             if (replyPromise) {
               try {
                 await replyPromise;
@@ -1993,7 +1994,7 @@ Usage:
           const pendingAsks = replyTracker.listPending();
           if (pendingAsks.length === 0) {
             return {
-              content: [{ type: "text", text: "No unresolved inbound asks." }],
+              content: [{ type: "text", text: "No unresolved inbound asks. Outbound asks are not listed here." }],
               details: {},
             };
           }
@@ -2117,9 +2118,9 @@ Usage:
   pi.registerTool({
     name: "intercom_ask",
     label: "Intercom Ask",
-    description: "Ask another local Pi session a question, waiting briefly before continuing asynchronously.",
-    promptSnippet: "Ask another local Pi session a question when the next step depends on its answer.",
-    promptGuidelines: ["Use intercom_ask only when work genuinely depends on another session's answer; use intercom_send for notifications."],
+    description: "Ask another local Pi session a blocking question, waiting briefly before continuing asynchronously. Do not use this for progress or status checkpoints.",
+    promptSnippet: "Ask another local Pi session a question only when the next step depends on its answer.",
+    promptGuidelines: ["Use intercom_ask only when work genuinely depends on another session's answer. Use intercom_send for progress checks, status requests, assignments, notifications, and follow-ups. Different recipients may be asked concurrently, but keep only one unresolved ask per recipient."],
     parameters: Type.Object({
       to: Type.String({ description: "Required recipient session name or stable session ID" }),
       message: Type.String({ description: "Required question to ask" }),
@@ -2177,7 +2178,7 @@ Usage:
 
   for (const definition of [
     { name: "intercom_list", label: "Intercom List", action: "list", description: "List active local intercom sessions.", promptSnippet: "List active local intercom sessions." },
-    { name: "intercom_pending", label: "Intercom Pending", action: "pending", description: "List unresolved inbound intercom asks.", promptSnippet: "List unresolved inbound intercom asks." },
+    { name: "intercom_pending", label: "Intercom Pending", action: "pending", description: "List unresolved inbound intercom asks. This does not list questions you sent to other sessions.", promptSnippet: "List unresolved inbound asks waiting for your reply." },
     { name: "intercom_status", label: "Intercom Status", action: "status", description: "Show this session's intercom connection status.", promptSnippet: "Show intercom connection status." },
   ] as const) {
     pi.registerTool({
