@@ -94,12 +94,14 @@ export type AskCancellationReason =
   | "cancelled"
   | "expired"
   | "delivery_failed"
-  | "session_disconnected";
+  | "session_disconnected"
+  | "authorization_revoked";
 
 export type ClientMessage =
   | { type: "health"; requestId: string; stateId?: string }
   | { type: "register"; protocol: string; version: number; session: SessionRegistration; sessionId?: string; stateId?: string; access?: RemoteRegistrationAccess }
   | { type: "access_control"; requestId: string; adminToken: string; action: "issue_enrollment"; enrollment: { name: string; parentSessionId: string; rootSessionId: string; remoteHostId: string; ttlMs?: number; expiresAt?: number } }
+  | { type: "access_control"; requestId: string; adminToken: string; action: "revoke_subtree"; principalId: string }
   | { type: "unregister"; preserveAsks?: boolean }
   | { type: "list"; requestId: string }
   | { type: "send"; to: string; message: Message }
@@ -113,6 +115,7 @@ export type BrokerMessage =
   | { type: "health_ok"; requestId: string; protocol: string; version: number; remoteAccess?: RemoteAccessContract }
   | { type: "registered"; sessionId: string; protocol: string; version: number; remoteAccess?: RemoteAccessContract; access?: RemoteAccessMetadata }
   | { type: "access_control_result"; requestId: string; action: "issue_enrollment"; enrollmentToken: string; expiresAt: number }
+  | { type: "access_control_result"; requestId: string; action: "revoke_subtree"; changedPrincipalIds: string[] }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "message"; deliveryId: string; from: SessionInfo; message: Message }
   | { type: "presence_update"; session: SessionInfo }

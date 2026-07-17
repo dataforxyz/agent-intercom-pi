@@ -217,6 +217,54 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
     assert.equal(reconnected.sessionId, registered.sessionId);
     assert.equal(reconnected.access.sessionCredential, undefined);
 
+    root.send({
+      type: "send",
+      to: registered.sessionId,
+      message: { id: "delivered-before-revoke", timestamp: 100, content: { text: "must not replay after revoke" } },
+    });
+    const deliveredBeforeRevoke = await reconnect.waitFor((message) => message.type === "message" && message.message.id === "delivered-before-revoke");
+    reconnect.send({ type: "message_received", deliveryId: deliveredBeforeRevoke.deliveryId });
+    await root.waitFor((message) => message.type === "delivered" && message.messageId === "delivered-before-revoke");
+
+    root.send({
+      type: "send",
+      to: registered.sessionId,
+      message: { id: "revoked-pending", timestamp: Date.now(), expectsReply: true, content: { text: "pending during revoke" } },
+    });
+    await root.waitFor((message) => message.type === "delivery_accepted" && message.messageId === "revoked-pending");
+    await reconnect.waitFor((message) => message.type === "message" && message.message.id === "revoked-pending");
+
+    const revokeControl = await connect(localPath);
+    peers.push(revokeControl);
+    revokeControl.send({
+      type: "access_control",
+      requestId: "revoke-1",
+      adminToken,
+      action: "revoke_subtree",
+      principalId: registered.sessionId,
+    });
+    const revoked = await revokeControl.waitFor((message) => message.type === "access_control_result" && message.action === "revoke_subtree");
+    assert.deepEqual(revoked.changedPrincipalIds, [registered.sessionId]);
+    const revokedDelivery = await root.waitFor((message) => message.type === "delivery_failed" && message.messageId === "revoked-pending");
+    assert.equal(revokedDelivery.code, "RECIPIENT_DISCONNECTED");
+
+    root.send({
+      type: "send",
+      to: registered.sessionId,
+      message: { id: "delivered-before-revoke", timestamp: 100, content: { text: "must not replay after revoke" } },
+    });
+    const fencedReplay = await root.waitFor((message) => message.type === "delivery_failed" && message.messageId === "delivered-before-revoke");
+    assert.equal(fencedReplay.code, "SESSION_NOT_FOUND");
+
+    const revokedReconnect = await connect(remotePath);
+    peers.push(revokedReconnect);
+    revokedReconnect.send(registration("revoked", "revoked", {
+      sessionCredential: registered.access.sessionCredential,
+      sessionId: registered.sessionId,
+      generation: registered.access.generation,
+    }));
+    assert.equal((await revokedReconnect.waitFor((message) => message.type === "error")).code, "ACCESS_DENIED");
+
     const auditText = readFileSync(join(intercomDir, "broker-audit.jsonl"), "utf8");
     const auditEvents = auditText.trim().split("\n").map((line) => JSON.parse(line).event);
     assert.ok(auditEvents.includes("enrollment_issued"));
@@ -225,6 +273,7 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
     assert.ok(auditEvents.includes("remote_reconnect"));
     assert.ok(auditEvents.includes("remote_delivery_denied"));
     assert.ok(auditEvents.includes("credential_reuse_denied"));
+    assert.ok(auditEvents.includes("principal_revoked"));
     assert.equal(auditText.includes(enrollment.enrollmentToken), false);
     assert.equal(auditText.includes(registered.access.sessionCredential), false);
   } finally {
