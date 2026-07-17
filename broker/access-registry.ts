@@ -93,7 +93,7 @@ function newSecret(): string {
 
 function requireText(value: string, field: string, maxLength = 512): string {
   const normalized = value.trim();
-  if (!normalized || normalized.length > maxLength || normalized.includes("\0")) {
+  if (!normalized || normalized.length > maxLength || /[\u0000-\u001f\u007f]/.test(normalized)) {
     throw new Error(`Invalid ${field}`);
   }
   return normalized;

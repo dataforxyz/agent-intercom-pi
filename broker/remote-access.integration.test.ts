@@ -216,6 +216,17 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
     const reconnected = await reconnect.waitFor((message) => message.type === "registered");
     assert.equal(reconnected.sessionId, registered.sessionId);
     assert.equal(reconnected.access.sessionCredential, undefined);
+
+    const auditText = readFileSync(join(intercomDir, "broker-audit.jsonl"), "utf8");
+    const auditEvents = auditText.trim().split("\n").map((line) => JSON.parse(line).event);
+    assert.ok(auditEvents.includes("enrollment_issued"));
+    assert.ok(auditEvents.includes("enrollment_consumed"));
+    assert.ok(auditEvents.includes("remote_connect"));
+    assert.ok(auditEvents.includes("remote_reconnect"));
+    assert.ok(auditEvents.includes("remote_delivery_denied"));
+    assert.ok(auditEvents.includes("credential_reuse_denied"));
+    assert.equal(auditText.includes(enrollment.enrollmentToken), false);
+    assert.equal(auditText.includes(registered.access.sessionCredential), false);
   } finally {
     for (const peer of peers) peer.close();
     broker.kill("SIGTERM");

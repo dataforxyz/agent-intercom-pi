@@ -9,7 +9,7 @@ import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
-import { sanitizeDisplayText, shortestUniqueIdPrefixes } from "./ui/session-identity.ts";
+import { formatSessionDisplayName, sanitizeDisplayText, sessionOriginLabel, shortestUniqueIdPrefixes } from "./ui/session-identity.ts";
 import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
@@ -455,7 +455,7 @@ function formatSessionLabel(session: SessionInfo, duplicates: Set<string>, idPre
   if (!session.name) {
     return sanitizeDisplayText(idPrefix, session.id);
   }
-  const name = sanitizeDisplayText(session.name, "Unnamed session");
+  const name = formatSessionDisplayName(session, "Unnamed session");
   return duplicates.has(session.name.toLowerCase())
     ? `${name} (${sanitizeDisplayText(idPrefix, session.id)})`
     : name;
@@ -465,7 +465,7 @@ function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: 
   const cwd = sanitizeDisplayText(session.cwd, "Unknown path");
   const model = sanitizeDisplayText(session.model, "Unknown model");
   const status = sanitizeDisplayText(session.status);
-  const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, status || undefined]
+  const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, sessionOriginLabel(session), status || undefined]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   return `• ${name} (${sanitizeDisplayText(idPrefix, session.id)}) — ${cwd} (${model})${suffix}`;
@@ -816,7 +816,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     };
   }
   function formatIncomingEntry(entry: InboundMessageEntry, position?: { index: number; total: number }): string {
-    const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
+    const senderDisplay = formatSessionDisplayName(entry.from);
     const prefix = position ? `[${position.index}/${position.total}] ` : "";
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use: ${entry.replyCommand}` : "";
     return `**${prefix}📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`;
