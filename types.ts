@@ -14,6 +14,10 @@ export interface SessionInfo {
   parentSessionId?: string;
   rootSessionId?: string;
   generation?: number;
+  canDelegate?: boolean;
+  depth?: number;
+  maxDepth?: number;
+  maxChildren?: number;
 }
 
 export interface Message {
@@ -36,7 +40,7 @@ export interface Attachment {
 
 export type SessionRegistration = Omit<
   SessionInfo,
-  "id" | "peerUid" | "trustedLocal" | "origin" | "remoteHostId" | "parentSessionId" | "rootSessionId" | "generation"
+  "id" | "peerUid" | "trustedLocal" | "origin" | "remoteHostId" | "parentSessionId" | "rootSessionId" | "generation" | "canDelegate" | "depth" | "maxDepth" | "maxChildren"
 >;
 
 export interface RemoteEnrollmentAccess {
@@ -57,6 +61,10 @@ export interface RemoteAccessMetadata {
   parentSessionId: string;
   rootSessionId: string;
   generation: number;
+  canDelegate: boolean;
+  depth: number;
+  maxDepth: number;
+  maxChildren: number;
   sessionCredential?: string;
 }
 
@@ -100,8 +108,9 @@ export type AskCancellationReason =
 export type ClientMessage =
   | { type: "health"; requestId: string; stateId?: string }
   | { type: "register"; protocol: string; version: number; session: SessionRegistration; sessionId?: string; stateId?: string; access?: RemoteRegistrationAccess }
-  | { type: "access_control"; requestId: string; adminToken: string; action: "issue_enrollment"; enrollment: { name: string; parentSessionId: string; rootSessionId: string; remoteHostId: string; ttlMs?: number; expiresAt?: number } }
+  | { type: "access_control"; requestId: string; adminToken: string; action: "issue_enrollment"; enrollment: { name: string; parentSessionId: string; rootSessionId: string; remoteHostId: string; ttlMs?: number; expiresAt?: number; canDelegate?: boolean; maxDepth?: number; maxChildren?: number } }
   | { type: "access_control"; requestId: string; adminToken: string; action: "revoke_subtree"; principalId: string }
+  | { type: "access_control"; requestId: string; access: RemoteSessionAccess; action: "issue_child_enrollment"; enrollment: { name: string; ttlMs?: number; expiresAt?: number; canDelegate?: boolean; maxDepth?: number; maxChildren?: number } }
   | { type: "unregister"; preserveAsks?: boolean }
   | { type: "list"; requestId: string }
   | { type: "send"; to: string; message: Message }
@@ -116,6 +125,7 @@ export type BrokerMessage =
   | { type: "registered"; sessionId: string; protocol: string; version: number; remoteAccess?: RemoteAccessContract; access?: RemoteAccessMetadata }
   | { type: "access_control_result"; requestId: string; action: "issue_enrollment"; enrollmentToken: string; expiresAt: number }
   | { type: "access_control_result"; requestId: string; action: "revoke_subtree"; changedPrincipalIds: string[] }
+  | { type: "access_control_result"; requestId: string; action: "issue_child_enrollment"; enrollmentToken: string; expiresAt: number; parentSessionId: string }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "message"; deliveryId: string; from: SessionInfo; message: Message }
   | { type: "presence_update"; session: SessionInfo }

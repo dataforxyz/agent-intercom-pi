@@ -136,7 +136,12 @@ function isSessionInfo(value: unknown): value is SessionInfo {
   if (session.remoteHostId !== undefined && typeof session.remoteHostId !== "string") return false;
   if (session.parentSessionId !== undefined && typeof session.parentSessionId !== "string") return false;
   if (session.rootSessionId !== undefined && typeof session.rootSessionId !== "string") return false;
-  return session.generation === undefined || (typeof session.generation === "number" && Number.isSafeInteger(session.generation));
+  if (session.generation !== undefined && (typeof session.generation !== "number" || !Number.isSafeInteger(session.generation))) return false;
+  if (session.canDelegate !== undefined && typeof session.canDelegate !== "boolean") return false;
+  for (const field of ["depth", "maxDepth", "maxChildren"] as const) {
+    if (session[field] !== undefined && (typeof session[field] !== "number" || !Number.isSafeInteger(session[field]))) return false;
+  }
+  return true;
 }
 
 function isRemoteAccessMetadata(value: unknown): value is import("../types.ts").RemoteAccessMetadata {
@@ -149,6 +154,13 @@ function isRemoteAccessMetadata(value: unknown): value is import("../types.ts").
     && typeof access.generation === "number"
     && Number.isSafeInteger(access.generation)
     && access.generation > 0
+    && typeof access.canDelegate === "boolean"
+    && typeof access.depth === "number"
+    && Number.isSafeInteger(access.depth)
+    && typeof access.maxDepth === "number"
+    && Number.isSafeInteger(access.maxDepth)
+    && typeof access.maxChildren === "number"
+    && Number.isSafeInteger(access.maxChildren)
     && (access.sessionCredential === undefined || typeof access.sessionCredential === "string");
 }
 

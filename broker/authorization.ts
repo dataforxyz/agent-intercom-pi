@@ -11,7 +11,7 @@ export function policyPrincipalForSession(session: SessionInfo): PolicyPrincipal
       kind: "remote",
       state: "active",
       generation: session.generation,
-      policy: "remote-parent",
+      policy: "remote-tree",
       parentSessionId: session.parentSessionId,
       rootSessionId: session.rootSessionId,
     };

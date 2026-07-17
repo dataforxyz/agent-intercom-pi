@@ -32,18 +32,18 @@ const sessions = [
   remote("child-b", "manager"),
 ];
 
-test("phase zero discovery and communication use the same direct-parent policy", () => {
+test("phase one discovery and communication use the same ancestor-chain policy", () => {
   assert.equal(authorizeSessionAction(sessions, "root", "send", "manager").allowed, true);
   assert.equal(authorizeSessionAction(sessions, "manager", "ask", "root").allowed, true);
   assert.equal(authorizeSessionAction(sessions, "manager", "send", "child-a").allowed, true);
   assert.equal(authorizeSessionAction(sessions, "child-a", "reply", "manager").allowed, true);
-  assert.equal(authorizeSessionAction(sessions, "child-a", "send", "root").allowed, false);
+  assert.equal(authorizeSessionAction(sessions, "child-a", "send", "root").allowed, true);
   assert.equal(authorizeSessionAction(sessions, "child-a", "discover", "child-b").allowed, false);
   assert.equal(authorizeSessionAction(sessions, "unrelated", "discover", "manager").allowed, false);
 });
 
 test("visibility hides unauthorized sessions rather than revealing denial details", () => {
-  assert.deepEqual(visibleSessions(sessions, "child-a").map((session) => session.id).sort(), ["child-a", "manager"]);
-  assert.deepEqual(visibleSessions(sessions, "root").map((session) => session.id).sort(), ["manager", "root", "unrelated"]);
+  assert.deepEqual(visibleSessions(sessions, "child-a").map((session) => session.id).sort(), ["child-a", "manager", "root"]);
+  assert.deepEqual(visibleSessions(sessions, "root").map((session) => session.id).sort(), ["child-a", "child-b", "manager", "root", "unrelated"]);
   assert.deepEqual(visibleSessions(sessions, "unrelated").map((session) => session.id).sort(), ["root", "unrelated"]);
 });

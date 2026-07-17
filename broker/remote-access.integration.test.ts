@@ -98,7 +98,7 @@ function registration(name: string, sessionId: string, access?: unknown) {
   };
 }
 
-test("authenticated remote gateway assigns identity and enforces phase zero visibility", { concurrency: false }, async () => {
+test("authenticated remote gateway assigns identity and enforces ownership-tree visibility", { concurrency: false }, async () => {
   const agentDir = mkdtempSync(join(tmpdir(), "agent-intercom-remote-gateway-"));
   const intercomDir = join(agentDir, "intercom");
   const localPath = join(intercomDir, "broker.sock");
@@ -122,8 +122,8 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
       version: 3,
       remoteAccess: {
         feature: "remote-access-v1",
-        policySemanticsVersion: 1,
-        policySemanticsHash: "78178a5fd57c353342642968d3a27262ed02cb236927723675d875959413dce3",
+        policySemanticsVersion: 2,
+        policySemanticsHash: "f3b00e503631bc91123aedfbcf1df72cc9913e1893c09728b2c598f3dcdfdfe0",
       },
     });
 
@@ -155,6 +155,9 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
         parentSessionId: "local-root",
         rootSessionId: "local-root",
         remoteHostId: "ika-dev-v3",
+        canDelegate: true,
+        maxDepth: 3,
+        maxChildren: 2,
       },
     });
     const enrollment = await control.waitFor((message) => message.type === "access_control_result");
@@ -168,6 +171,63 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
     assert.equal(registered.access.remoteHostId, "ika-dev-v3");
     assert.equal(registered.access.parentSessionId, "local-root");
     assert.equal(registered.access.sessionCredential.length > 20, true);
+    assert.equal(registered.access.canDelegate, true);
+    assert.equal(registered.access.depth, 1);
+    assert.equal(registered.access.maxDepth, 3);
+    assert.equal(registered.access.maxChildren, 2);
+
+    const issueChild = async (parent: any, name: string, options: Record<string, unknown> = {}) => {
+      const controlPeer = await connect(remotePath);
+      peers.push(controlPeer);
+      controlPeer.send({
+        type: "access_control",
+        requestId: `delegate-${name}`,
+        action: "issue_child_enrollment",
+        access: {
+          sessionCredential: parent.access.sessionCredential,
+          sessionId: parent.sessionId,
+          generation: parent.access.generation,
+        },
+        enrollment: { name, ...options },
+      });
+      return await controlPeer.waitFor((message) =>
+        (message.type === "access_control_result" && message.requestId === `delegate-${name}`) || message.type === "error"
+      );
+    };
+    const connectChild = async (enrollmentToken: string, selectedName: string) => {
+      const childPeer = await connect(remotePath);
+      peers.push(childPeer);
+      childPeer.send(registration(selectedName, `selected-${selectedName}`, { enrollmentToken }));
+      return { peer: childPeer, registered: await childPeer.waitFor((message) => message.type === "registered") };
+    };
+
+    const leadEnrollment = await issueChild(registered, "ika/lead", { canDelegate: true, maxDepth: 3, maxChildren: 1 });
+    assert.equal(leadEnrollment.action, "issue_child_enrollment");
+    const lead = await connectChild(leadEnrollment.enrollmentToken, "forged-lead");
+    assert.equal(lead.registered.access.parentSessionId, registered.sessionId);
+    assert.equal(lead.registered.access.rootSessionId, "local-root");
+    assert.equal(lead.registered.access.depth, 2);
+
+    const workerEnrollment = await issueChild(lead.registered, "ika/worker");
+    const worker = await connectChild(workerEnrollment.enrollmentToken, "forged-worker");
+    assert.equal(worker.registered.access.parentSessionId, lead.registered.sessionId);
+    assert.equal(worker.registered.access.depth, 3);
+    assert.equal(worker.registered.access.canDelegate, false);
+
+    const siblingEnrollment = await issueChild(registered, "ika/sibling");
+    const sibling = await connectChild(siblingEnrollment.enrollmentToken, "forged-sibling");
+    const exhausted = await issueChild(registered, "ika/too-many");
+    assert.equal(exhausted.type, "error");
+    assert.equal(exhausted.code, "ACCESS_DENIED");
+
+    worker.peer.send({ type: "list", requestId: "worker-tree" });
+    const workerTree = await worker.peer.waitFor((message) => message.type === "sessions" && message.requestId === "worker-tree");
+    assert.deepEqual(workerTree.sessions.map((session: any) => session.id).sort(), ["local-root", registered.sessionId, lead.registered.sessionId, worker.registered.sessionId].sort());
+    assert.equal(workerTree.sessions.some((session: any) => session.id === sibling.registered.sessionId), false);
+
+    remote.send({ type: "list", requestId: "manager-tree" });
+    const managerTree = await remote.waitFor((message) => message.type === "sessions" && message.requestId === "manager-tree");
+    assert.deepEqual(managerTree.sessions.map((session: any) => session.id).sort(), ["local-root", registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, sibling.registered.sessionId].sort());
 
     const reusedEnrollment = await connect(remotePath);
     peers.push(reusedEnrollment);
@@ -176,7 +236,7 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
 
     root.send({ type: "list", requestId: "root-list" });
     const rootSessions = await root.waitFor((message) => message.type === "sessions" && message.requestId === "root-list");
-    assert.deepEqual(rootSessions.sessions.map((session: any) => session.id).sort(), [registered.sessionId, "local-root", "unrelated"].sort());
+    assert.deepEqual(rootSessions.sessions.map((session: any) => session.id).sort(), [registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, sibling.registered.sessionId, "local-root", "unrelated"].sort());
     assert.equal(rootSessions.sessions.find((session: any) => session.id === registered.sessionId).name, "ika/manager");
 
     unrelated.send({ type: "list", requestId: "unrelated-list" });
@@ -185,7 +245,7 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
 
     remote.send({ type: "list", requestId: "remote-list" });
     const remoteSessions = await remote.waitFor((message) => message.type === "sessions" && message.requestId === "remote-list");
-    assert.deepEqual(remoteSessions.sessions.map((session: any) => session.id).sort(), [registered.sessionId, "local-root"].sort());
+    assert.deepEqual(remoteSessions.sessions.map((session: any) => session.id).sort(), [registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, sibling.registered.sessionId, "local-root"].sort());
 
     remote.send({
       type: "send",
@@ -244,7 +304,7 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
       principalId: registered.sessionId,
     });
     const revoked = await revokeControl.waitFor((message) => message.type === "access_control_result" && message.action === "revoke_subtree");
-    assert.deepEqual(revoked.changedPrincipalIds, [registered.sessionId]);
+    assert.deepEqual(new Set(revoked.changedPrincipalIds), new Set([registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, sibling.registered.sessionId]));
     const revokedDelivery = await root.waitFor((message) => message.type === "delivery_failed" && message.messageId === "revoked-pending");
     assert.equal(revokedDelivery.code, "RECIPIENT_DISCONNECTED");
 

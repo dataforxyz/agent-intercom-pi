@@ -464,8 +464,8 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
       version: 3,
       remoteAccess: {
         feature: "remote-access-v1",
-        policySemanticsVersion: 1,
-        policySemanticsHash: "78178a5fd57c353342642968d3a27262ed02cb236927723675d875959413dce3",
+        policySemanticsVersion: 2,
+        policySemanticsHash: "f3b00e503631bc91123aedfbcf1df72cc9913e1893c09728b2c598f3dcdfdfe0",
       },
     }]);
 

@@ -34,6 +34,10 @@ test("atomically replaces enrollment material with assigned reconnect state", ()
       parentSessionId: "local-root",
       rootSessionId: "local-root",
       generation: 1,
+      canDelegate: false,
+      depth: 1,
+      maxDepth: 1,
+      maxChildren: 0,
       sessionCredential: "reconnect-secret",
     });
     assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {

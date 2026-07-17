@@ -2,7 +2,7 @@ import net from "net";
 import { existsSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION, type PolicyAction } from "@dataforxyz/agent-intercom-core";
+import { authorize, POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION, type PolicyAction } from "@dataforxyz/agent-intercom-core";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import {
   ensureIntercomRuntimeDir,
@@ -511,12 +511,13 @@ class IntercomBroker {
     }
 
     if (clientMessage.type === "access_control") {
-      if (origin !== "local" || currentId !== null) {
-        this.sendError(socket, "ACCESS_DENIED", "Remote access control is unavailable on this connection");
+      if (currentId !== null) {
+        this.sendError(socket, "ACCESS_DENIED", "Remote access control requires a short-lived control connection");
         socket.end();
         return;
       }
-      this.handleAccessControl(socket, clientMessage);
+      if (origin === "local") this.handleAccessControl(socket, clientMessage);
+      else this.handleRemoteAccessControl(socket, clientMessage);
       return;
     }
 
@@ -647,6 +648,10 @@ class IntercomBroker {
           parentSessionId: remotePrincipal.parentSessionId,
           rootSessionId: remotePrincipal.rootSessionId,
           generation: remotePrincipal.generation,
+          canDelegate: remotePrincipal.canDelegate,
+          depth: remotePrincipal.depth,
+          maxDepth: remotePrincipal.maxDepth,
+          maxChildren: remotePrincipal.maxChildren,
         } : {
           id,
           ...(session.name !== undefined ? { name: session.name } : {}),
@@ -697,6 +702,10 @@ class IntercomBroker {
               parentSessionId: remotePrincipal.parentSessionId,
               rootSessionId: remotePrincipal.rootSessionId,
               generation: remotePrincipal.generation,
+              canDelegate: remotePrincipal.canDelegate,
+              depth: remotePrincipal.depth,
+              maxDepth: remotePrincipal.maxDepth,
+              maxChildren: remotePrincipal.maxChildren,
               ...(issuedSessionCredential ? { sessionCredential: issuedSessionCredential } : {}),
             },
           } : {}),
@@ -1130,6 +1139,9 @@ class IntercomBroker {
       || typeof enrollment.remoteHostId !== "string"
       || (enrollment.ttlMs !== undefined && (typeof enrollment.ttlMs !== "number" || !Number.isSafeInteger(enrollment.ttlMs)))
       || (enrollment.expiresAt !== undefined && (typeof enrollment.expiresAt !== "number" || !Number.isSafeInteger(enrollment.expiresAt)))
+      || (enrollment.canDelegate !== undefined && typeof enrollment.canDelegate !== "boolean")
+      || (enrollment.maxDepth !== undefined && (typeof enrollment.maxDepth !== "number" || !Number.isSafeInteger(enrollment.maxDepth)))
+      || (enrollment.maxChildren !== undefined && (typeof enrollment.maxChildren !== "number" || !Number.isSafeInteger(enrollment.maxChildren)))
     ) {
       this.sendError(socket, "INVALID_REQUEST", "Invalid remote enrollment request");
       socket.end();
@@ -1147,6 +1159,9 @@ class IntercomBroker {
       rootSessionId: parent.info.id,
       remoteHostId: enrollment.remoteHostId,
       ...(enrollment.expiresAt !== undefined ? { expiresAt: enrollment.expiresAt as number } : {}),
+      ...(enrollment.canDelegate !== undefined ? { canDelegate: enrollment.canDelegate as boolean } : {}),
+      ...(enrollment.maxDepth !== undefined ? { maxDepth: enrollment.maxDepth as number } : {}),
+      ...(enrollment.maxChildren !== undefined ? { maxChildren: enrollment.maxChildren as number } : {}),
     }, enrollment.ttlMs as number | undefined);
     this.audit.record({
       event: "enrollment_issued",
@@ -1162,6 +1177,104 @@ class IntercomBroker {
       action: "issue_enrollment",
       enrollmentToken: issued.enrollmentToken,
       expiresAt: issued.expiresAt,
+    });
+    socket.end();
+  }
+
+  private handleRemoteAccessControl(socket: net.Socket, message: Record<string, unknown>): void {
+    if (
+      typeof message.requestId !== "string"
+      || message.requestId.length > MAX_MESSAGE_ID_LENGTH
+      || message.action !== "issue_child_enrollment"
+      || typeof message.access !== "object"
+      || message.access === null
+      || Array.isArray(message.access)
+      || typeof message.enrollment !== "object"
+      || message.enrollment === null
+      || Array.isArray(message.enrollment)
+    ) {
+      this.sendError(socket, "ACCESS_DENIED", "Remote delegation request was rejected");
+      socket.end();
+      return;
+    }
+    const access = message.access as Record<string, unknown>;
+    const enrollment = message.enrollment as Record<string, unknown>;
+    if (
+      typeof access.sessionCredential !== "string"
+      || typeof access.sessionId !== "string"
+      || typeof access.generation !== "number"
+      || !Number.isSafeInteger(access.generation)
+      || typeof enrollment.name !== "string"
+      || (enrollment.ttlMs !== undefined && (typeof enrollment.ttlMs !== "number" || !Number.isSafeInteger(enrollment.ttlMs)))
+      || (enrollment.expiresAt !== undefined && (typeof enrollment.expiresAt !== "number" || !Number.isSafeInteger(enrollment.expiresAt)))
+      || (enrollment.canDelegate !== undefined && typeof enrollment.canDelegate !== "boolean")
+      || (enrollment.maxDepth !== undefined && (typeof enrollment.maxDepth !== "number" || !Number.isSafeInteger(enrollment.maxDepth)))
+      || (enrollment.maxChildren !== undefined && (typeof enrollment.maxChildren !== "number" || !Number.isSafeInteger(enrollment.maxChildren)))
+    ) {
+      this.sendError(socket, "ACCESS_DENIED", "Remote delegation credential or request was rejected");
+      socket.end();
+      return;
+    }
+    let parent: RemotePrincipalRecord;
+    try {
+      parent = this.accessRegistry.authenticateSession(access.sessionId, access.generation, access.sessionCredential);
+    } catch {
+      this.audit.tryRecord({ event: "remote_registration_denied", outcome: "denied", reason: "INVALID_DELEGATION_CREDENTIAL" });
+      this.sendError(socket, "ACCESS_DENIED", "Remote delegation credential was rejected");
+      socket.end();
+      return;
+    }
+    const principal = {
+      id: parent.id,
+      kind: "remote" as const,
+      state: "active" as const,
+      generation: parent.generation,
+      policy: "remote-tree" as const,
+      parentSessionId: parent.parentSessionId,
+      rootSessionId: parent.rootSessionId,
+    };
+    const delegation = authorize(
+      { principals: { [parent.id]: principal } },
+      parent.id,
+      "delegate_child",
+      parent.id,
+      { actorGeneration: parent.generation, targetGeneration: parent.generation },
+    );
+    if (!delegation.allowed) {
+      this.sendError(socket, "ACCESS_DENIED", "Remote delegation policy denied the request");
+      socket.end();
+      return;
+    }
+    let issued;
+    try {
+      issued = this.accessRegistry.issueChildEnrollment(parent.id, parent.generation, {
+        name: enrollment.name,
+        ...(enrollment.expiresAt !== undefined ? { expiresAt: enrollment.expiresAt as number } : {}),
+        ...(enrollment.canDelegate !== undefined ? { canDelegate: enrollment.canDelegate as boolean } : {}),
+        ...(enrollment.maxDepth !== undefined ? { maxDepth: enrollment.maxDepth as number } : {}),
+        ...(enrollment.maxChildren !== undefined ? { maxChildren: enrollment.maxChildren as number } : {}),
+      }, enrollment.ttlMs as number | undefined);
+    } catch {
+      this.sendError(socket, "ACCESS_DENIED", "Remote delegation limits denied the request");
+      socket.end();
+      return;
+    }
+    this.audit.record({
+      event: "enrollment_issued",
+      outcome: "allowed",
+      actorId: parent.id,
+      targetId: enrollment.name,
+      remoteHostId: parent.remoteHostId,
+      generation: parent.generation,
+      reason: `delegated-expires:${issued.expiresAt}`,
+    });
+    writeMessage(socket, {
+      type: "access_control_result",
+      requestId: message.requestId,
+      action: "issue_child_enrollment",
+      enrollmentToken: issued.enrollmentToken,
+      expiresAt: issued.expiresAt,
+      parentSessionId: parent.id,
     });
     socket.end();
   }
