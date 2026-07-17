@@ -120,6 +120,7 @@ test("authenticated remote gateway assigns identity and enforces ownership-tree 
       requestId: "health-1",
       protocol: "pi-intercom",
       version: 3,
+      endpoint: "remote",
       remoteAccess: {
         feature: "remote-access-v1",
         policySemanticsVersion: 2,

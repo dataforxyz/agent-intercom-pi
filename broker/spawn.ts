@@ -105,6 +105,7 @@ export function isBrokerHealthOkMessage(message: unknown, requestId: string): bo
     || response.requestId !== requestId
     || response.protocol !== INTERCOM_PROTOCOL_NAME
     || response.version !== INTERCOM_PROTOCOL_VERSION
+    || response.endpoint !== "local"
   ) return false;
   const remoteAccess = response.remoteAccess;
   if (typeof remoteAccess !== "object" || remoteAccess === null || Array.isArray(remoteAccess)) return false;
