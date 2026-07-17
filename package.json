@@ -41,6 +41,7 @@
     "typebox": "*"
   },
   "dependencies": {
+    "@dataforxyz/agent-intercom-core": "git+https://github.com/dataforxyz/agent-intercom-core.git#cb5d2212912db0cd8abbb16ab08e4b539424a05d",
     "tsx": "^4.20.0"
   },
   "devDependencies": {

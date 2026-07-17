@@ -2,7 +2,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { SessionInfo, Message } from "../types.ts";
-import { sanitizeDisplayText } from "./session-identity.ts";
+import { formatSessionDisplayName, sanitizeDisplayText } from "./session-identity.ts";
 
 export class InlineMessageComponent implements Component {
   private from: SessionInfo;
@@ -33,10 +33,7 @@ export class InlineMessageComponent implements Component {
   render(width: number): string[] {
     const lines: string[] = [];
     const borderChar = "─";
-    const senderName = sanitizeDisplayText(
-      this.from.name,
-      sanitizeDisplayText(this.from.id.slice(0, 8), "Unknown sender"),
-    );
+    const senderName = formatSessionDisplayName(this.from, "Unknown sender");
     const senderCwd = sanitizeDisplayText(this.from.cwd, "Unknown path");
     if (width < 3) {
       return [truncateToWidth(`From ${senderName}`, width)];

@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import net from "net";
 import { randomUUID } from "crypto";
+import { POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION } from "@dataforxyz/agent-intercom-core";
 import { createMessageReader, writeMessage } from "./framing.ts";
 import {
   ensureIntercomRuntimeDir,
@@ -99,10 +100,19 @@ export function isBrokerHealthOkMessage(message: unknown, requestId: string): bo
     return false;
   }
   const response = message as Record<string, unknown>;
-  return response.type === "health_ok"
-    && response.requestId === requestId
-    && response.protocol === INTERCOM_PROTOCOL_NAME
-    && response.version === INTERCOM_PROTOCOL_VERSION;
+  if (
+    response.type !== "health_ok"
+    || response.requestId !== requestId
+    || response.protocol !== INTERCOM_PROTOCOL_NAME
+    || response.version !== INTERCOM_PROTOCOL_VERSION
+    || response.endpoint !== "local"
+  ) return false;
+  const remoteAccess = response.remoteAccess;
+  if (typeof remoteAccess !== "object" || remoteAccess === null || Array.isArray(remoteAccess)) return false;
+  const contract = remoteAccess as Record<string, unknown>;
+  return contract.feature === "remote-access-v1"
+    && contract.policySemanticsVersion === POLICY_SEMANTICS_VERSION
+    && contract.policySemanticsHash === POLICY_SEMANTICS_HASH;
 }
 
 function writeWindowsHiddenLauncher(

@@ -9,6 +9,15 @@ export interface SessionInfo {
   status?: string;
   peerUid?: number;
   trustedLocal?: boolean;
+  origin?: "local" | "remote";
+  remoteHostId?: string;
+  parentSessionId?: string;
+  rootSessionId?: string;
+  generation?: number;
+  canDelegate?: boolean;
+  depth?: number;
+  maxDepth?: number;
+  maxChildren?: number;
 }
 
 export interface Message {
@@ -29,7 +38,60 @@ export interface Attachment {
   language?: string;
 }
 
-export type SessionRegistration = Omit<SessionInfo, "id" | "peerUid" | "trustedLocal">;
+export type SessionRegistration = Omit<
+  SessionInfo,
+  "id" | "peerUid" | "trustedLocal" | "origin" | "remoteHostId" | "parentSessionId" | "rootSessionId" | "generation" | "canDelegate" | "depth" | "maxDepth" | "maxChildren"
+>;
+
+export interface RemoteEnrollmentAccess {
+  enrollmentToken: string;
+}
+
+export interface RemoteSessionAccess {
+  sessionCredential: string;
+  sessionId: string;
+  generation: number;
+}
+
+export type RemoteRegistrationAccess = RemoteEnrollmentAccess | RemoteSessionAccess;
+
+export interface RemoteAccessMetadata {
+  origin: "remote";
+  remoteHostId: string;
+  parentSessionId: string;
+  rootSessionId: string;
+  generation: number;
+  canDelegate: boolean;
+  depth: number;
+  maxDepth: number;
+  maxChildren: number;
+  sessionCredential?: string;
+}
+
+export interface RemotePrincipalSummary {
+  id: string;
+  name: string;
+  parentSessionId: string;
+  rootSessionId: string;
+  remoteHostId: string;
+  generation: number;
+  policy: "remote-tree";
+  canDelegate: boolean;
+  depth: number;
+  maxDepth: number;
+  maxChildren: number;
+  state: "active" | "revoked";
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+  connected: boolean;
+}
+
+export interface RemoteAccessContract {
+  feature: "remote-access-v1";
+  policySemanticsVersion: number;
+  policySemanticsHash: string;
+}
 
 export type DeliveryFailureCode =
   | "INVALID_MESSAGE"
@@ -50,6 +112,8 @@ export type DeliveryFailureCode =
 export type BrokerErrorCode =
   | "PROTOCOL_MISMATCH"
   | "INVALID_REQUEST"
+  | "ACCESS_DENIED"
+  | "REMOTE_ACCESS_INCOMPATIBLE"
   | "RATE_LIMITED"
   | "TOO_MANY_SESSIONS";
 
@@ -57,10 +121,18 @@ export type AskCancellationReason =
   | "cancelled"
   | "expired"
   | "delivery_failed"
-  | "session_disconnected";
+  | "session_disconnected"
+  | "authorization_revoked";
 
 export type ClientMessage =
-  | { type: "register"; protocol: string; version: number; session: SessionRegistration; sessionId?: string; stateId?: string }
+  | { type: "health"; requestId: string; stateId?: string }
+  | { type: "register"; protocol: string; version: number; session: SessionRegistration; sessionId?: string; stateId?: string; access?: RemoteRegistrationAccess }
+  | { type: "access_control"; requestId: string; adminToken: string; action: "issue_enrollment"; enrollment: { name: string; parentSessionId: string; rootSessionId: string; remoteHostId: string; ttlMs?: number; expiresAt?: number; canDelegate?: boolean; maxDepth?: number; maxChildren?: number } }
+  | { type: "access_control"; requestId: string; adminToken: string; action: "revoke_subtree"; principalId: string }
+  | { type: "access_control"; requestId: string; adminToken: string; action: "inspect_tree"; principalId: string }
+  | { type: "access_control"; requestId: string; adminToken: string; action: "adopt_subtree"; principalId: string; newParentSessionId: string }
+  | { type: "access_control"; requestId: string; access: RemoteSessionAccess; action: "issue_child_enrollment"; enrollment: { name: string; ttlMs?: number; expiresAt?: number; canDelegate?: boolean; maxDepth?: number; maxChildren?: number } }
+  | { type: "access_control"; requestId: string; access: RemoteSessionAccess; action: "inspect_tree"; principalId?: string }
   | { type: "unregister"; preserveAsks?: boolean }
   | { type: "list"; requestId: string }
   | { type: "send"; to: string; message: Message }
@@ -71,7 +143,13 @@ export type ClientMessage =
   | { type: "presence"; name?: string; status?: string; model?: string };
 
 export type BrokerMessage =
-  | { type: "registered"; sessionId: string; protocol: string; version: number }
+  | { type: "health_ok"; requestId: string; protocol: string; version: number; endpoint: "local" | "remote"; remoteAccess?: RemoteAccessContract }
+  | { type: "registered"; sessionId: string; protocol: string; version: number; remoteAccess?: RemoteAccessContract; access?: RemoteAccessMetadata }
+  | { type: "access_control_result"; requestId: string; action: "issue_enrollment"; enrollmentToken: string; expiresAt: number }
+  | { type: "access_control_result"; requestId: string; action: "revoke_subtree"; changedPrincipalIds: string[] }
+  | { type: "access_control_result"; requestId: string; action: "inspect_tree"; principals: RemotePrincipalSummary[] }
+  | { type: "access_control_result"; requestId: string; action: "adopt_subtree"; principals: RemotePrincipalSummary[] }
+  | { type: "access_control_result"; requestId: string; action: "issue_child_enrollment"; enrollmentToken: string; expiresAt: number; parentSessionId: string }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "message"; deliveryId: string; from: SessionInfo; message: Message }
   | { type: "presence_update"; session: SessionInfo }

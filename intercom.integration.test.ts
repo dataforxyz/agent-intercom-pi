@@ -462,6 +462,12 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
       requestId: "authorized-health",
       protocol: "pi-intercom",
       version: 3,
+      endpoint: "local",
+      remoteAccess: {
+        feature: "remote-access-v1",
+        policySemanticsVersion: 2,
+        policySemanticsHash: "f3b00e503631bc91123aedfbcf1df72cc9913e1893c09728b2c598f3dcdfdfe0",
+      },
     }]);
 
     const mismatchMessages = await exchange({

@@ -36,8 +36,19 @@ export function shortestUniqueIdPrefixes(ids: readonly string[], minimumLength =
   return result;
 }
 
+export function sessionOriginLabel(session: SessionInfo): string | undefined {
+  if (session.origin !== "remote") return undefined;
+  return `remote:${sanitizeDisplayText(session.remoteHostId, "unknown-host")}`;
+}
+
+export function formatSessionDisplayName(session: SessionInfo, fallback?: string): string {
+  const name = sanitizeDisplayText(session.name, fallback ?? sanitizeDisplayText(session.id.slice(0, 8), "Unknown session"));
+  const origin = sessionOriginLabel(session);
+  return origin ? `${name} [${origin}]` : name;
+}
+
 export function searchableSessionText(session: SessionInfo): string {
-  return [session.name, session.id, session.cwd, session.model, session.status]
+  return [session.name, session.id, session.cwd, session.model, session.status, session.origin, session.remoteHostId, session.parentSessionId, session.rootSessionId]
     .filter((value): value is string => typeof value === "string")
     .join("\n")
     .toLocaleLowerCase();

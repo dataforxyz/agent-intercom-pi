@@ -2,7 +2,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { SessionInfo } from "../types.ts";
-import { sanitizeDisplayText, searchableSessionText, shortestUniqueIdPrefixes } from "./session-identity.ts";
+import { sanitizeDisplayText, searchableSessionText, sessionOriginLabel, shortestUniqueIdPrefixes } from "./session-identity.ts";
 
 function middleTruncate(text: string, maxWidth: number): string {
   if (visibleWidth(text) <= maxWidth) {
@@ -36,7 +36,7 @@ function sessionTitle(
   options?: { self?: boolean; sameCwd?: boolean },
 ): string {
   const name = sanitizeDisplayText(session.name, "Unnamed session");
-  const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined]
+  const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined, sessionOriginLabel(session)]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   return `${name} (${sanitizeDisplayText(idPrefix, "unknown")})${suffix}`;
