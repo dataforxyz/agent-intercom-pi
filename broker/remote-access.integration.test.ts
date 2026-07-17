@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -264,6 +264,71 @@ test("authenticated remote gateway assigns identity and enforces phase zero visi
       generation: registered.access.generation,
     }));
     assert.equal((await revokedReconnect.waitFor((message) => message.type === "error")).code, "ACCESS_DENIED");
+
+    const clientEnrollmentControl = await connect(localPath);
+    peers.push(clientEnrollmentControl);
+    clientEnrollmentControl.send({
+      type: "access_control",
+      requestId: "enroll-client",
+      adminToken,
+      action: "issue_enrollment",
+      enrollment: {
+        name: "ika/client",
+        parentSessionId: "local-root",
+        rootSessionId: "local-root",
+        remoteHostId: "ika-dev-v3",
+      },
+    });
+    const clientEnrollment = await clientEnrollmentControl.waitFor((message) => message.type === "access_control_result" && message.requestId === "enroll-client");
+    const remoteClientDir = join(agentDir, "remote-client");
+    const remoteClientIntercom = join(remoteClientDir, "intercom");
+    const credentialPath = join(remoteClientDir, "credential.json");
+    mkdirSync(remoteClientIntercom, { recursive: true, mode: 0o700 });
+    symlinkSync(remotePath, join(remoteClientIntercom, "broker.sock"));
+    writeFileSync(credentialPath, JSON.stringify({ version: 1, enrollmentToken: clientEnrollment.enrollmentToken }), { mode: 0o600 });
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousCredentialPath = process.env.AGENT_INTERCOM_ACCESS_CREDENTIAL_PATH;
+    process.env.PI_CODING_AGENT_DIR = remoteClientDir;
+    process.env.AGENT_INTERCOM_ACCESS_CREDENTIAL_PATH = credentialPath;
+    try {
+      const { IntercomClient } = await import("./client.ts");
+      const firstClient = new IntercomClient();
+      await firstClient.connect({
+        name: "client-selected-name",
+        cwd: repoDir,
+        model: "test-client",
+        pid: process.pid,
+        startedAt: Date.now(),
+        lastActivity: Date.now(),
+      }, "client-selected-id");
+      const assignedClientId = firstClient.sessionId;
+      assert.ok(assignedClientId && assignedClientId !== "client-selected-id");
+      const persistedCredential = JSON.parse(readFileSync(credentialPath, "utf8"));
+      assert.equal(persistedCredential.sessionId, assignedClientId);
+      assert.equal(typeof persistedCredential.sessionCredential, "string");
+      assert.equal(persistedCredential.enrollmentToken, undefined);
+      const clientVisible = await firstClient.listSessions();
+      assert.deepEqual(clientVisible.map((session) => session.id).sort(), [assignedClientId, "local-root"].sort());
+      assert.equal(clientVisible.find((session) => session.id === assignedClientId)?.name, "ika/client");
+      await firstClient.disconnect();
+
+      const secondClient = new IntercomClient();
+      await secondClient.connect({
+        name: "changed-client-name",
+        cwd: repoDir,
+        model: "test-client",
+        pid: process.pid,
+        startedAt: Date.now(),
+        lastActivity: Date.now(),
+      }, "another-selected-id");
+      assert.equal(secondClient.sessionId, assignedClientId);
+      await secondClient.disconnect();
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousCredentialPath === undefined) delete process.env.AGENT_INTERCOM_ACCESS_CREDENTIAL_PATH;
+      else process.env.AGENT_INTERCOM_ACCESS_CREDENTIAL_PATH = previousCredentialPath;
+    }
 
     const auditText = readFileSync(join(intercomDir, "broker-audit.jsonl"), "utf8");
     const auditEvents = auditText.trim().split("\n").map((line) => JSON.parse(line).event);
