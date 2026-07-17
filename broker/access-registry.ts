@@ -74,6 +74,8 @@ export interface ConsumedEnrollment {
   sessionCredential: string;
 }
 
+export type RemotePrincipalMetadata = Omit<RemotePrincipalRecord, "credentialHash">;
+
 export interface PersistedAdminCredential {
   version: typeof REMOTE_ACCESS_CREDENTIAL_VERSION;
   adminToken: string;
@@ -339,6 +341,65 @@ export class RemoteAccessRegistry {
     return structuredClone(principal);
   }
 
+  inspectSubtree(principalId: string): RemotePrincipalMetadata[] {
+    const result: RemotePrincipalMetadata[] = [];
+    const queue = [principalId];
+    const seen = new Set<string>();
+    while (queue.length) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const principal = this.state.principals[id];
+      if (!principal) continue;
+      const { credentialHash: _credentialHash, ...metadata } = principal;
+      result.push(structuredClone(metadata));
+      for (const candidate of Object.values(this.state.principals)) {
+        if (candidate.parentSessionId === id) queue.push(candidate.id);
+      }
+    }
+    return result;
+  }
+
+  adoptSubtree(principalId: string, newParentSessionId: string, newRootSessionId: string): RemotePrincipalRecord[] {
+    const principal = this.state.principals[principalId];
+    if (!principal) throw new Error("Unknown adopted principal");
+    if (principalId === newParentSessionId) throw new Error("Adoption would create an ownership cycle");
+    let ancestor = this.state.principals[newParentSessionId];
+    const seen = new Set<string>();
+    while (ancestor && !seen.has(ancestor.id)) {
+      if (ancestor.id === principalId) throw new Error("Adoption would create an ownership cycle");
+      seen.add(ancestor.id);
+      ancestor = this.state.principals[ancestor.parentSessionId];
+    }
+    const ids = this.subtreePrincipalIds(principalId);
+    const now = this.now();
+    principal.parentSessionId = requireText(newParentSessionId, "new parent session ID");
+    for (const id of ids) {
+      const changed = this.state.principals[id];
+      changed.rootSessionId = requireText(newRootSessionId, "new root session ID");
+      changed.generation += 1;
+      changed.updatedAt = now;
+    }
+    const changedIds = new Set(ids);
+    for (const [hash, enrollment] of Object.entries(this.state.enrollments)) {
+      if (changedIds.has(enrollment.template.parentSessionId)) delete this.state.enrollments[hash];
+    }
+    this.persist();
+    return ids.map((id) => structuredClone(this.state.principals[id]));
+  }
+
+  expirePrincipals(now = this.now()): RemotePrincipalRecord[] {
+    const changed = new Map<string, RemotePrincipalRecord>();
+    const expiredRoots = Object.values(this.state.principals)
+      .filter((principal) => principal.state === "active" && principal.expiresAt <= now)
+      .sort((left, right) => left.depth - right.depth);
+    for (const principal of expiredRoots) {
+      if (changed.has(principal.id)) continue;
+      for (const revoked of this.revoke(principal.id)) changed.set(revoked.id, revoked);
+    }
+    return [...changed.values()];
+  }
+
   revoke(principalId: string): RemotePrincipalRecord[] {
     const now = this.now();
     const queue = [principalId];
@@ -360,6 +421,22 @@ export class RemoteAccessRegistry {
     }
     if (changed.length) this.persist();
     return changed;
+  }
+
+  private subtreePrincipalIds(principalId: string): string[] {
+    const result: string[] = [];
+    const queue = [principalId];
+    const seen = new Set<string>();
+    while (queue.length) {
+      const id = queue.shift()!;
+      if (seen.has(id) || !this.state.principals[id]) continue;
+      seen.add(id);
+      result.push(id);
+      for (const candidate of Object.values(this.state.principals)) {
+        if (candidate.parentSessionId === id) queue.push(candidate.id);
+      }
+    }
+    return result;
   }
 
   private pruneExpiredEnrollments(now = this.now()): void {

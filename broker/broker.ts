@@ -2,7 +2,7 @@ import net from "net";
 import { existsSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { authorize, POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION, type PolicyAction } from "@dataforxyz/agent-intercom-core";
+import { authorize, POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION, type PolicyAction, type PolicyState } from "@dataforxyz/agent-intercom-core";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import {
   ensureIntercomRuntimeDir,
@@ -23,7 +23,7 @@ import {
 import { getAskTimeoutMs } from "../config.ts";
 import { writeDurableJson } from "../durable-json.ts";
 import { acquireBrokerOwnership, hasBrokerOwnership, releaseBrokerOwnership } from "./ownership.ts";
-import { RemoteAccessRegistry, type RemotePrincipalRecord } from "./access-registry.ts";
+import { RemoteAccessRegistry, type RemotePrincipalMetadata, type RemotePrincipalRecord } from "./access-registry.ts";
 import { authorizeSessionAction, visibleSessions } from "./authorization.ts";
 import { BrokerAuditLog } from "./audit.ts";
 import type {
@@ -35,6 +35,7 @@ import type {
   Attachment,
   SessionInfo,
   SessionRegistration,
+  RemotePrincipalSummary,
 } from "../types.ts";
 
 const INTERCOM_DIR = getIntercomDirPath();
@@ -55,6 +56,7 @@ const RATE_LIMIT_CAPACITY = 240;
 const RATE_LIMIT_REFILL_PER_SECOND = 120;
 const REMOTE_RATE_LIMIT_CAPACITY = 60;
 const REMOTE_RATE_LIMIT_REFILL_PER_SECOND = 30;
+const REMOTE_EXPIRY_SWEEP_MS = Math.max(50, Number.parseInt(process.env.PI_INTERCOM_REMOTE_EXPIRY_SWEEP_MS ?? "1000", 10) || 1000);
 const PRESENCE_HEARTBEAT_MS = 1000;
 const DELIVERY_ACK_TIMEOUT_MS = 8000;
 const RECENT_DELIVERY_TTL_MS = 10 * 60 * 1000;
@@ -255,6 +257,7 @@ class IntercomBroker {
   private server: net.Server;
   private remoteServer: net.Server | null = null;
   private shutdownTimer: NodeJS.Timeout | null = null;
+  private expiryTimer: NodeJS.Timeout | null = null;
   private readonly askTimeoutMs = getAskTimeoutMs();
   private readonly accessRegistry: RemoteAccessRegistry;
   private readonly audit: BrokerAuditLog;
@@ -323,6 +326,8 @@ class IntercomBroker {
         announceWhenReady();
       });
     }
+    this.expiryTimer = setInterval(() => this.reconcileExpiredPrincipals(), REMOTE_EXPIRY_SWEEP_MS);
+    this.expiryTimer.unref?.();
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
   }
@@ -1103,6 +1108,64 @@ class IntercomBroker {
       socket.end();
       return;
     }
+    if (message.action === "inspect_tree") {
+      if (typeof message.principalId !== "string" || !isSessionId(message.principalId)) {
+        this.sendError(socket, "INVALID_REQUEST", "Invalid remote principal ID");
+        socket.end();
+        return;
+      }
+      const principals = this.accessRegistry.inspectSubtree(message.principalId).map((principal) => this.principalSummary(principal));
+      this.audit.record({
+        event: "tree_inspected",
+        outcome: "allowed",
+        actorId: "local-admin",
+        targetId: message.principalId,
+        visibleCount: principals.length,
+      });
+      writeMessage(socket, { type: "access_control_result", requestId: message.requestId, action: "inspect_tree", principals });
+      socket.end();
+      return;
+    }
+    if (message.action === "adopt_subtree") {
+      if (
+        typeof message.principalId !== "string"
+        || !isSessionId(message.principalId)
+        || typeof message.newParentSessionId !== "string"
+        || !isSessionId(message.newParentSessionId)
+      ) {
+        this.sendError(socket, "INVALID_REQUEST", "Invalid adoption request");
+        socket.end();
+        return;
+      }
+      const localParent = this.sessions.get(message.newParentSessionId);
+      const remoteParent = this.accessRegistry.snapshot().principals[message.newParentSessionId];
+      if ((!localParent || localParent.info.origin === "remote") && (!remoteParent || remoteParent.state !== "active")) {
+        this.sendError(socket, "ACCESS_DENIED", "Adoption parent must be an active local or remote principal");
+        socket.end();
+        return;
+      }
+      const newRootSessionId = localParent?.info.origin === "local"
+        ? localParent.info.id
+        : remoteParent!.rootSessionId;
+      const priorSessions = Array.from(this.sessions.values(), (session) => session.info);
+      let changed: RemotePrincipalRecord[];
+      try {
+        changed = this.accessRegistry.adoptSubtree(message.principalId, message.newParentSessionId, newRootSessionId);
+      } catch {
+        this.sendError(socket, "ACCESS_DENIED", "Adoption would violate the ownership tree");
+        socket.end();
+        return;
+      }
+      this.disconnectTransitionedPrincipals(changed, priorSessions, "principal_adopted");
+      writeMessage(socket, {
+        type: "access_control_result",
+        requestId: message.requestId,
+        action: "adopt_subtree",
+        principals: changed.map((principal) => this.principalSummary(principal)),
+      });
+      socket.end();
+      return;
+    }
     if (message.action === "revoke_subtree") {
       if (typeof message.principalId !== "string" || !isSessionId(message.principalId)) {
         this.sendError(socket, "INVALID_REQUEST", "Invalid remote principal ID");
@@ -1111,7 +1174,7 @@ class IntercomBroker {
       }
       const priorSessions = Array.from(this.sessions.values(), (session) => session.info);
       const changed = this.accessRegistry.revoke(message.principalId);
-      this.disconnectRevokedPrincipals(changed, priorSessions);
+      this.disconnectTransitionedPrincipals(changed, priorSessions);
       writeMessage(socket, {
         type: "access_control_result",
         requestId: message.requestId,
@@ -1185,33 +1248,22 @@ class IntercomBroker {
     if (
       typeof message.requestId !== "string"
       || message.requestId.length > MAX_MESSAGE_ID_LENGTH
-      || message.action !== "issue_child_enrollment"
       || typeof message.access !== "object"
       || message.access === null
       || Array.isArray(message.access)
-      || typeof message.enrollment !== "object"
-      || message.enrollment === null
-      || Array.isArray(message.enrollment)
     ) {
-      this.sendError(socket, "ACCESS_DENIED", "Remote delegation request was rejected");
+      this.sendError(socket, "ACCESS_DENIED", "Remote control request was rejected");
       socket.end();
       return;
     }
     const access = message.access as Record<string, unknown>;
-    const enrollment = message.enrollment as Record<string, unknown>;
     if (
       typeof access.sessionCredential !== "string"
       || typeof access.sessionId !== "string"
       || typeof access.generation !== "number"
       || !Number.isSafeInteger(access.generation)
-      || typeof enrollment.name !== "string"
-      || (enrollment.ttlMs !== undefined && (typeof enrollment.ttlMs !== "number" || !Number.isSafeInteger(enrollment.ttlMs)))
-      || (enrollment.expiresAt !== undefined && (typeof enrollment.expiresAt !== "number" || !Number.isSafeInteger(enrollment.expiresAt)))
-      || (enrollment.canDelegate !== undefined && typeof enrollment.canDelegate !== "boolean")
-      || (enrollment.maxDepth !== undefined && (typeof enrollment.maxDepth !== "number" || !Number.isSafeInteger(enrollment.maxDepth)))
-      || (enrollment.maxChildren !== undefined && (typeof enrollment.maxChildren !== "number" || !Number.isSafeInteger(enrollment.maxChildren)))
     ) {
-      this.sendError(socket, "ACCESS_DENIED", "Remote delegation credential or request was rejected");
+      this.sendError(socket, "ACCESS_DENIED", "Remote control credential was rejected");
       socket.end();
       return;
     }
@@ -1219,27 +1271,63 @@ class IntercomBroker {
     try {
       parent = this.accessRegistry.authenticateSession(access.sessionId, access.generation, access.sessionCredential);
     } catch {
-      this.audit.tryRecord({ event: "remote_registration_denied", outcome: "denied", reason: "INVALID_DELEGATION_CREDENTIAL" });
-      this.sendError(socket, "ACCESS_DENIED", "Remote delegation credential was rejected");
+      this.audit.tryRecord({ event: "remote_registration_denied", outcome: "denied", reason: "INVALID_CONTROL_CREDENTIAL" });
+      this.sendError(socket, "ACCESS_DENIED", "Remote control credential was rejected");
       socket.end();
       return;
     }
-    const principal = {
-      id: parent.id,
-      kind: "remote" as const,
-      state: "active" as const,
-      generation: parent.generation,
-      policy: "remote-tree" as const,
-      parentSessionId: parent.parentSessionId,
-      rootSessionId: parent.rootSessionId,
-    };
-    const delegation = authorize(
-      { principals: { [parent.id]: principal } },
-      parent.id,
-      "delegate_child",
-      parent.id,
-      { actorGeneration: parent.generation, targetGeneration: parent.generation },
-    );
+    const policyState = this.registryPolicyState();
+    if (message.action === "inspect_tree") {
+      const targetId = typeof message.principalId === "string" ? message.principalId : parent.id;
+      const inspection = authorize(policyState, parent.id, "inspect_tree", targetId, { actorGeneration: parent.generation });
+      if (!inspection.allowed) {
+        this.sendError(socket, "ACCESS_DENIED", "Remote tree inspection policy denied the request");
+        socket.end();
+        return;
+      }
+      const principals = this.accessRegistry.inspectSubtree(targetId)
+        .filter((candidate) => authorize(policyState, parent.id, "inspect_tree", candidate.id, { actorGeneration: parent.generation }).allowed)
+        .map((candidate) => this.principalSummary(candidate));
+      this.audit.record({
+        event: "tree_inspected",
+        outcome: "allowed",
+        actorId: parent.id,
+        targetId,
+        remoteHostId: parent.remoteHostId,
+        generation: parent.generation,
+        visibleCount: principals.length,
+      });
+      writeMessage(socket, { type: "access_control_result", requestId: message.requestId, action: "inspect_tree", principals });
+      socket.end();
+      return;
+    }
+    if (
+      message.action !== "issue_child_enrollment"
+      || typeof message.enrollment !== "object"
+      || message.enrollment === null
+      || Array.isArray(message.enrollment)
+    ) {
+      this.sendError(socket, "ACCESS_DENIED", "Remote control action was rejected");
+      socket.end();
+      return;
+    }
+    const enrollment = message.enrollment as Record<string, unknown>;
+    if (
+      typeof enrollment.name !== "string"
+      || (enrollment.ttlMs !== undefined && (typeof enrollment.ttlMs !== "number" || !Number.isSafeInteger(enrollment.ttlMs)))
+      || (enrollment.expiresAt !== undefined && (typeof enrollment.expiresAt !== "number" || !Number.isSafeInteger(enrollment.expiresAt)))
+      || (enrollment.canDelegate !== undefined && typeof enrollment.canDelegate !== "boolean")
+      || (enrollment.maxDepth !== undefined && (typeof enrollment.maxDepth !== "number" || !Number.isSafeInteger(enrollment.maxDepth)))
+      || (enrollment.maxChildren !== undefined && (typeof enrollment.maxChildren !== "number" || !Number.isSafeInteger(enrollment.maxChildren)))
+    ) {
+      this.sendError(socket, "ACCESS_DENIED", "Remote delegation request was rejected");
+      socket.end();
+      return;
+    }
+    const delegation = authorize(policyState, parent.id, "delegate_child", parent.id, {
+      actorGeneration: parent.generation,
+      targetGeneration: parent.generation,
+    });
     if (!delegation.allowed) {
       this.sendError(socket, "ACCESS_DENIED", "Remote delegation policy denied the request");
       socket.end();
@@ -1279,13 +1367,54 @@ class IntercomBroker {
     socket.end();
   }
 
-  private disconnectRevokedPrincipals(changed: RemotePrincipalRecord[], priorSessions: SessionInfo[]): void {
+  private registryPolicyState(): PolicyState {
+    const records = this.accessRegistry.snapshot().principals;
+    const principals: PolicyState["principals"] = {};
+    for (const record of Object.values(records)) {
+      principals[record.id] = {
+        id: record.id,
+        kind: "remote",
+        state: record.state,
+        generation: record.generation,
+        policy: "remote-tree",
+        parentSessionId: record.parentSessionId,
+        rootSessionId: record.rootSessionId,
+      };
+      if (!principals[record.rootSessionId]) {
+        principals[record.rootSessionId] = {
+          id: record.rootSessionId,
+          kind: "local",
+          state: "active",
+          generation: 1,
+          policy: "local-public",
+          rootSessionId: record.rootSessionId,
+        };
+      }
+    }
+    return { principals };
+  }
+
+  private principalSummary(principal: RemotePrincipalMetadata): RemotePrincipalSummary {
+    return { ...principal, connected: this.sessions.has(principal.id) };
+  }
+
+  private reconcileExpiredPrincipals(): void {
+    const priorSessions = Array.from(this.sessions.values(), (session) => session.info);
+    const changed = this.accessRegistry.expirePrincipals();
+    if (changed.length > 0) this.disconnectTransitionedPrincipals(changed, priorSessions, "principal_expired");
+  }
+
+  private disconnectTransitionedPrincipals(
+    changed: RemotePrincipalRecord[],
+    priorSessions: SessionInfo[],
+    auditEvent: "principal_revoked" | "principal_expired" | "principal_adopted" = "principal_revoked",
+  ): void {
     const changedIds = new Set(changed.map((principal) => principal.id));
     for (const principal of changed) {
       const live = this.sessions.get(principal.id);
       if (!live) {
         this.audit.record({
-          event: "principal_revoked",
+          event: auditEvent,
           outcome: "allowed",
           actorId: principal.id,
           remoteHostId: principal.remoteHostId,
@@ -1311,7 +1440,7 @@ class IntercomBroker {
         if (recent.from === principal.id || recent.to === principal.id) this.recentDeliveries.delete(key);
       }
       this.audit.record({
-        event: "principal_revoked",
+        event: auditEvent,
         outcome: "allowed",
         actorId: principal.id,
         targetId: subject.parentSessionId,
@@ -1685,6 +1814,10 @@ class IntercomBroker {
 
   private shutdown(): void {
     console.log("Broker shutting down");
+    if (this.expiryTimer) {
+      clearInterval(this.expiryTimer);
+      this.expiryTimer = null;
+    }
     
     for (const session of this.sessions.values()) {
       session.socket.end();

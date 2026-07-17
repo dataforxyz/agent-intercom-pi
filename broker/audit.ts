@@ -13,7 +13,10 @@ export type BrokerAuditEvent =
   | "remote_delivery_denied"
   | "credential_reuse_denied"
   | "remote_visibility_filtered"
+  | "tree_inspected"
   | "principal_revoked"
+  | "principal_expired"
+  | "principal_adopted"
   | "generation_fenced";
 
 export interface BrokerAuditEntry {

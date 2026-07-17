@@ -68,6 +68,25 @@ export interface RemoteAccessMetadata {
   sessionCredential?: string;
 }
 
+export interface RemotePrincipalSummary {
+  id: string;
+  name: string;
+  parentSessionId: string;
+  rootSessionId: string;
+  remoteHostId: string;
+  generation: number;
+  policy: "remote-tree";
+  canDelegate: boolean;
+  depth: number;
+  maxDepth: number;
+  maxChildren: number;
+  state: "active" | "revoked";
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+  connected: boolean;
+}
+
 export interface RemoteAccessContract {
   feature: "remote-access-v1";
   policySemanticsVersion: number;
@@ -110,7 +129,10 @@ export type ClientMessage =
   | { type: "register"; protocol: string; version: number; session: SessionRegistration; sessionId?: string; stateId?: string; access?: RemoteRegistrationAccess }
   | { type: "access_control"; requestId: string; adminToken: string; action: "issue_enrollment"; enrollment: { name: string; parentSessionId: string; rootSessionId: string; remoteHostId: string; ttlMs?: number; expiresAt?: number; canDelegate?: boolean; maxDepth?: number; maxChildren?: number } }
   | { type: "access_control"; requestId: string; adminToken: string; action: "revoke_subtree"; principalId: string }
+  | { type: "access_control"; requestId: string; adminToken: string; action: "inspect_tree"; principalId: string }
+  | { type: "access_control"; requestId: string; adminToken: string; action: "adopt_subtree"; principalId: string; newParentSessionId: string }
   | { type: "access_control"; requestId: string; access: RemoteSessionAccess; action: "issue_child_enrollment"; enrollment: { name: string; ttlMs?: number; expiresAt?: number; canDelegate?: boolean; maxDepth?: number; maxChildren?: number } }
+  | { type: "access_control"; requestId: string; access: RemoteSessionAccess; action: "inspect_tree"; principalId?: string }
   | { type: "unregister"; preserveAsks?: boolean }
   | { type: "list"; requestId: string }
   | { type: "send"; to: string; message: Message }
@@ -125,6 +147,8 @@ export type BrokerMessage =
   | { type: "registered"; sessionId: string; protocol: string; version: number; remoteAccess?: RemoteAccessContract; access?: RemoteAccessMetadata }
   | { type: "access_control_result"; requestId: string; action: "issue_enrollment"; enrollmentToken: string; expiresAt: number }
   | { type: "access_control_result"; requestId: string; action: "revoke_subtree"; changedPrincipalIds: string[] }
+  | { type: "access_control_result"; requestId: string; action: "inspect_tree"; principals: RemotePrincipalSummary[] }
+  | { type: "access_control_result"; requestId: string; action: "adopt_subtree"; principals: RemotePrincipalSummary[] }
   | { type: "access_control_result"; requestId: string; action: "issue_child_enrollment"; enrollmentToken: string; expiresAt: number; parentSessionId: string }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "message"; deliveryId: string; from: SessionInfo; message: Message }

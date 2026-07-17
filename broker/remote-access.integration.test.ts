@@ -105,7 +105,7 @@ test("authenticated remote gateway assigns identity and enforces ownership-tree 
   const remotePath = join(intercomDir, "remote-gateway.sock");
   const broker = spawn(process.execPath, ["--import", "tsx", join(repoDir, "broker", "broker.ts")], {
     cwd: repoDir,
-    env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, HOME: agentDir, USERPROFILE: agentDir },
+    env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, HOME: agentDir, USERPROFILE: agentDir, PI_INTERCOM_REMOTE_EXPIRY_SWEEP_MS: "50" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const peers: RawPeer[] = [];
@@ -229,6 +229,73 @@ test("authenticated remote gateway assigns identity and enforces ownership-tree 
     const managerTree = await remote.waitFor((message) => message.type === "sessions" && message.requestId === "manager-tree");
     assert.deepEqual(managerTree.sessions.map((session: any) => session.id).sort(), ["local-root", registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, sibling.registered.sessionId].sort());
 
+    const inspectAs = async (principal: any, targetId?: string) => {
+      const inspectPeer = await connect(remotePath);
+      peers.push(inspectPeer);
+      inspectPeer.send({
+        type: "access_control",
+        requestId: `inspect-${principal.sessionId}-${targetId ?? "self"}`,
+        action: "inspect_tree",
+        access: {
+          sessionCredential: principal.access.sessionCredential,
+          sessionId: principal.sessionId,
+          generation: principal.access.generation,
+        },
+        ...(targetId ? { principalId: targetId } : {}),
+      });
+      return await inspectPeer.waitFor((message) => message.type === "access_control_result" || message.type === "error");
+    };
+    const managerInspection = await inspectAs(registered);
+    assert.deepEqual(new Set(managerInspection.principals.map((principal: any) => principal.id)), new Set([registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, sibling.registered.sessionId]));
+    assert.equal(managerInspection.principals.every((principal: any) => principal.connected === true && principal.credentialHash === undefined), true);
+    const forbiddenInspection = await inspectAs(worker.registered, registered.sessionId);
+    assert.equal(forbiddenInspection.code, "ACCESS_DENIED");
+    const workerInspection = await inspectAs(worker.registered);
+    assert.deepEqual(workerInspection.principals.map((principal: any) => principal.id), [worker.registered.sessionId]);
+
+    const adminInspectionPeer = await connect(localPath);
+    peers.push(adminInspectionPeer);
+    adminInspectionPeer.send({ type: "access_control", requestId: "admin-inspect", adminToken, action: "inspect_tree", principalId: registered.sessionId });
+    const adminInspection = await adminInspectionPeer.waitFor((message) => message.type === "access_control_result" && message.action === "inspect_tree");
+    assert.deepEqual(new Set(adminInspection.principals.map((principal: any) => principal.id)), new Set([registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, sibling.registered.sessionId]));
+
+    const adoptControl = await connect(localPath);
+    peers.push(adoptControl);
+    adoptControl.send({
+      type: "access_control",
+      requestId: "adopt-sibling",
+      adminToken,
+      action: "adopt_subtree",
+      principalId: sibling.registered.sessionId,
+      newParentSessionId: "local-root",
+    });
+    const adopted = await adoptControl.waitFor((message) => message.type === "access_control_result" && message.action === "adopt_subtree");
+    assert.equal(adopted.principals.length, 1);
+    assert.equal(adopted.principals[0].id, sibling.registered.sessionId);
+    assert.equal(adopted.principals[0].parentSessionId, "local-root");
+    assert.equal(adopted.principals[0].generation, 2);
+    assert.equal(adopted.principals[0].connected, false);
+
+    const staleAdoptedReconnect = await connect(remotePath);
+    peers.push(staleAdoptedReconnect);
+    staleAdoptedReconnect.send(registration("stale-adopted", "stale-adopted", {
+      sessionCredential: sibling.registered.access.sessionCredential,
+      sessionId: sibling.registered.sessionId,
+      generation: 1,
+    }));
+    assert.equal((await staleAdoptedReconnect.waitFor((message) => message.type === "error")).code, "ACCESS_DENIED");
+    const adoptedSibling = await connect(remotePath);
+    peers.push(adoptedSibling);
+    adoptedSibling.send(registration("adopted", "adopted", {
+      sessionCredential: sibling.registered.access.sessionCredential,
+      sessionId: sibling.registered.sessionId,
+      generation: 2,
+    }));
+    await adoptedSibling.waitFor((message) => message.type === "registered");
+    remote.send({ type: "list", requestId: "manager-after-adoption" });
+    const afterAdoption = await remote.waitFor((message) => message.type === "sessions" && message.requestId === "manager-after-adoption");
+    assert.equal(afterAdoption.sessions.some((session: any) => session.id === sibling.registered.sessionId), false);
+
     const reusedEnrollment = await connect(remotePath);
     peers.push(reusedEnrollment);
     reusedEnrollment.send(registration("other", "other", { enrollmentToken: enrollment.enrollmentToken }));
@@ -245,7 +312,7 @@ test("authenticated remote gateway assigns identity and enforces ownership-tree 
 
     remote.send({ type: "list", requestId: "remote-list" });
     const remoteSessions = await remote.waitFor((message) => message.type === "sessions" && message.requestId === "remote-list");
-    assert.deepEqual(remoteSessions.sessions.map((session: any) => session.id).sort(), [registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, sibling.registered.sessionId, "local-root"].sort());
+    assert.deepEqual(remoteSessions.sessions.map((session: any) => session.id).sort(), [registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, "local-root"].sort());
 
     remote.send({
       type: "send",
@@ -304,7 +371,7 @@ test("authenticated remote gateway assigns identity and enforces ownership-tree 
       principalId: registered.sessionId,
     });
     const revoked = await revokeControl.waitFor((message) => message.type === "access_control_result" && message.action === "revoke_subtree");
-    assert.deepEqual(new Set(revoked.changedPrincipalIds), new Set([registered.sessionId, lead.registered.sessionId, worker.registered.sessionId, sibling.registered.sessionId]));
+    assert.deepEqual(new Set(revoked.changedPrincipalIds), new Set([registered.sessionId, lead.registered.sessionId, worker.registered.sessionId]));
     const revokedDelivery = await root.waitFor((message) => message.type === "delivery_failed" && message.messageId === "revoked-pending");
     assert.equal(revokedDelivery.code, "RECIPIENT_DISCONNECTED");
 
@@ -390,6 +457,40 @@ test("authenticated remote gateway assigns identity and enforces ownership-tree 
       else process.env.AGENT_INTERCOM_ACCESS_CREDENTIAL_PATH = previousCredentialPath;
     }
 
+    const expiringControl = await connect(localPath);
+    peers.push(expiringControl);
+    expiringControl.send({
+      type: "access_control",
+      requestId: "enroll-expiring",
+      adminToken,
+      action: "issue_enrollment",
+      enrollment: {
+        name: "ika/expiring",
+        parentSessionId: "local-root",
+        rootSessionId: "local-root",
+        remoteHostId: "ika-dev-v3",
+        expiresAt: Date.now() + 800,
+      },
+    });
+    const expiringEnrollment = await expiringControl.waitFor((message) => message.type === "access_control_result" && message.requestId === "enroll-expiring");
+    const expiring = await connect(remotePath);
+    peers.push(expiring);
+    expiring.send(registration("expiring", "expiring", { enrollmentToken: expiringEnrollment.enrollmentToken }));
+    const expiringRegistered = await expiring.waitFor((message) => message.type === "registered");
+    await new Promise<void>((resolve, reject) => {
+      if (expiring.socket.destroyed) return resolve();
+      const timeout = setTimeout(() => reject(new Error("expired principal remained connected")), 3000);
+      expiring.socket.once("close", () => { clearTimeout(timeout); resolve(); });
+    });
+    const expiredReconnect = await connect(remotePath);
+    peers.push(expiredReconnect);
+    expiredReconnect.send(registration("expired", "expired", {
+      sessionCredential: expiringRegistered.access.sessionCredential,
+      sessionId: expiringRegistered.sessionId,
+      generation: expiringRegistered.access.generation,
+    }));
+    assert.equal((await expiredReconnect.waitFor((message) => message.type === "error")).code, "ACCESS_DENIED");
+
     const auditText = readFileSync(join(intercomDir, "broker-audit.jsonl"), "utf8");
     const auditEvents = auditText.trim().split("\n").map((line) => JSON.parse(line).event);
     assert.ok(auditEvents.includes("enrollment_issued"));
@@ -399,6 +500,9 @@ test("authenticated remote gateway assigns identity and enforces ownership-tree 
     assert.ok(auditEvents.includes("remote_delivery_denied"));
     assert.ok(auditEvents.includes("credential_reuse_denied"));
     assert.ok(auditEvents.includes("principal_revoked"));
+    assert.ok(auditEvents.includes("tree_inspected"));
+    assert.ok(auditEvents.includes("principal_expired"));
+    assert.ok(auditEvents.includes("principal_adopted"));
     assert.equal(auditText.includes(enrollment.enrollmentToken), false);
     assert.equal(auditText.includes(registered.access.sessionCredential), false);
   } finally {

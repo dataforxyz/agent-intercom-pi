@@ -175,6 +175,9 @@ test("delegated child enrollment is broker-computed and cannot widen parent limi
     assert.equal(grandchild.principal.depth, 3);
     assert.equal(grandchild.principal.canDelegate, false);
     assert.equal(grandchild.principal.maxDepth, 3);
+    const metadata = f.registry.inspectSubtree(parent.principal.id);
+    assert.deepEqual(metadata.map((principal) => principal.id), [parent.principal.id, child.principal.id, grandchild.principal.id]);
+    assert.equal(metadata.some((principal) => "credentialHash" in principal), false);
   } finally {
     f.close();
   }
@@ -188,6 +191,54 @@ test("non-delegating principals cannot issue child enrollment", () => {
       () => f.registry.issueChildEnrollment(parent.principal.id, 1, { name: "child" }),
       (error: unknown) => error instanceof RemoteAccessError && error.code === "INVALID_ENROLLMENT",
     );
+  } finally {
+    f.close();
+  }
+});
+
+test("adoption rewrites ancestry, fences generations, and cancels pending delegated tokens", () => {
+  const f = fixture();
+  try {
+    const parent = f.registry.consumeEnrollment(f.registry.issueEnrollment({
+      ...template,
+      canDelegate: true,
+      maxDepth: 3,
+      maxChildren: 1,
+    }).enrollmentToken);
+    const child = f.registry.consumeEnrollment(f.registry.issueChildEnrollment(parent.principal.id, 1, {
+      name: "child",
+      canDelegate: true,
+      maxDepth: 3,
+      maxChildren: 1,
+    }).enrollmentToken);
+    f.registry.issueChildEnrollment(child.principal.id, 1, { name: "pending-grandchild" });
+    assert.throws(() => f.registry.adoptSubtree(parent.principal.id, child.principal.id, "root"), /ownership cycle/);
+    const changed = f.registry.adoptSubtree(child.principal.id, "other-local-root", "other-local-root");
+    assert.deepEqual(changed.map((principal) => principal.id), [child.principal.id]);
+    assert.equal(changed[0].parentSessionId, "other-local-root");
+    assert.equal(changed[0].rootSessionId, "other-local-root");
+    assert.equal(changed[0].generation, 2);
+    assert.equal(Object.keys(f.registry.snapshot().enrollments).length, 0);
+  } finally {
+    f.close();
+  }
+});
+
+test("expiry reconciliation recursively generation-fences an expired subtree", () => {
+  const f = fixture();
+  try {
+    const parent = f.registry.consumeEnrollment(f.registry.issueEnrollment({
+      ...template,
+      expiresAt: 1_800_000_001_000,
+      canDelegate: true,
+      maxDepth: 2,
+      maxChildren: 1,
+    }).enrollmentToken);
+    const child = f.registry.consumeEnrollment(f.registry.issueChildEnrollment(parent.principal.id, 1, { name: "child" }).enrollmentToken);
+    f.advance(1001);
+    const expired = f.registry.expirePrincipals();
+    assert.deepEqual(new Set(expired.map((principal) => principal.id)), new Set([parent.principal.id, child.principal.id]));
+    assert.equal(expired.every((principal) => principal.state === "revoked" && principal.generation === 2), true);
   } finally {
     f.close();
   }
