@@ -1,8 +1,10 @@
 import { EventEmitter } from "events";
 import net from "net";
 import { randomUUID } from "crypto";
+import { POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION } from "@dataforxyz/agent-intercom-core";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import { PersistentOutboundOutbox } from "../outbound-outbox.ts";
+import { loadRemoteAccessCredential, writeRemoteSessionCredential, type LoadedRemoteAccessCredential } from "./access-credential.ts";
 import {
   getBrokerConnectTarget,
   INTERCOM_PROTOCOL_NAME,
@@ -129,7 +131,25 @@ function isSessionInfo(value: unknown): value is SessionInfo {
     return false;
   }
 
-  return session.trustedLocal === undefined || typeof session.trustedLocal === "boolean";
+  if (session.trustedLocal !== undefined && typeof session.trustedLocal !== "boolean") return false;
+  if (session.origin !== undefined && session.origin !== "local" && session.origin !== "remote") return false;
+  if (session.remoteHostId !== undefined && typeof session.remoteHostId !== "string") return false;
+  if (session.parentSessionId !== undefined && typeof session.parentSessionId !== "string") return false;
+  if (session.rootSessionId !== undefined && typeof session.rootSessionId !== "string") return false;
+  return session.generation === undefined || (typeof session.generation === "number" && Number.isSafeInteger(session.generation));
+}
+
+function isRemoteAccessMetadata(value: unknown): value is import("../types.ts").RemoteAccessMetadata {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const access = value as Record<string, unknown>;
+  return access.origin === "remote"
+    && typeof access.remoteHostId === "string"
+    && typeof access.parentSessionId === "string"
+    && typeof access.rootSessionId === "string"
+    && typeof access.generation === "number"
+    && Number.isSafeInteger(access.generation)
+    && access.generation > 0
+    && (access.sessionCredential === undefined || typeof access.sessionCredential === "string");
 }
 
 export class IntercomClient extends EventEmitter {
@@ -144,6 +164,7 @@ export class IntercomClient extends EventEmitter {
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
   private pendingAskControls = new Map<string, { resolve: (applied: boolean) => void; timeout: NodeJS.Timeout }>();
   private outbox: PersistentOutboundOutbox | null = null;
+  private remoteAccessCredential: LoadedRemoteAccessCredential | undefined;
   private disconnecting = false;
   private disconnectError: Error | null = null;
 
@@ -203,6 +224,7 @@ export class IntercomClient extends EventEmitter {
       let target: BrokerConnectTarget;
       try {
         target = getBrokerConnectTarget();
+        this.remoteAccessCredential = loadRemoteAccessCredential();
         socket = connectToBrokerTarget(target);
       } catch (error) {
         reject(toError(error));
@@ -311,7 +333,8 @@ export class IntercomClient extends EventEmitter {
           protocol: INTERCOM_PROTOCOL_NAME,
           version: INTERCOM_PROTOCOL_VERSION,
           session,
-          ...(sessionId ? { sessionId } : {}),
+          ...(!this.remoteAccessCredential && sessionId ? { sessionId } : {}),
+          ...(this.remoteAccessCredential ? { access: this.remoteAccessCredential.access } : {}),
           ...(typeof target === "string" ? {} : { stateId: target.stateId }),
         });
       } catch (error) {
@@ -349,6 +372,32 @@ export class IntercomClient extends EventEmitter {
 
         if (this._sessionId !== null) {
           throw new Error("Received duplicate registered message");
+        }
+
+        if (this.remoteAccessCredential) {
+          const contract = brokerMessage.remoteAccess;
+          const contractFields = typeof contract === "object" && contract !== null
+            ? contract as Record<string, unknown>
+            : undefined;
+          if (
+            !contractFields
+            || contractFields.feature !== "remote-access-v1"
+            || contractFields.policySemanticsVersion !== POLICY_SEMANTICS_VERSION
+            || contractFields.policySemanticsHash !== POLICY_SEMANTICS_HASH
+          ) {
+            throw new Error("Remote Intercom policy contract is absent or incompatible");
+          }
+          if (!isRemoteAccessMetadata(brokerMessage.access)) {
+            throw new Error("Remote Intercom registration omitted broker-owned provenance");
+          }
+          if (this.remoteAccessCredential.enrollment) {
+            writeRemoteSessionCredential(this.remoteAccessCredential.path, brokerMessage.sessionId, brokerMessage.access);
+          } else {
+            const reconnect = this.remoteAccessCredential.access;
+            if (!("sessionId" in reconnect) || reconnect.sessionId !== brokerMessage.sessionId || reconnect.generation !== brokerMessage.access.generation) {
+              throw new Error("Remote Intercom reconnect identity or generation changed unexpectedly");
+            }
+          }
         }
 
         this._sessionId = brokerMessage.sessionId;

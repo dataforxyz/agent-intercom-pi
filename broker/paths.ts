@@ -66,6 +66,28 @@ export function getBrokerAskStateFilePath(intercomDir: string = getIntercomDirPa
   return join(intercomDir, "broker-asks.json");
 }
 
+export function getBrokerAccessStateFilePath(intercomDir: string = getIntercomDirPath()): string {
+  return join(intercomDir, "broker-access.json");
+}
+
+export function getBrokerAdminCredentialFilePath(intercomDir: string = getIntercomDirPath()): string {
+  return join(intercomDir, "broker-admin.json");
+}
+
+export function getBrokerAuditFilePath(intercomDir: string = getIntercomDirPath()): string {
+  return join(intercomDir, "broker-audit.jsonl");
+}
+
+export function getRemoteGatewaySocketPath(
+  platform: NodeJS.Platform = process.platform,
+  agentDir: string = getAgentDirPath(),
+): string {
+  if (platform === "win32") {
+    return `\\\\.\\pipe\\pi-intercom-remote-${sanitizePipeSegment(agentDir)}`;
+  }
+  return join(getIntercomDirPath(agentDir), "remote-gateway.sock");
+}
+
 export function getBrokerSocketPath(
   platform: NodeJS.Platform = process.platform,
   agentDir: string = getAgentDirPath(),

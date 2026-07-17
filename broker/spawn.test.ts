@@ -125,10 +125,22 @@ test("getBrokerSpawnOptions passes an absolute PI_CODING_AGENT_DIR to the broker
   assert.equal(options.env.PI_CODING_AGENT_DIR, path.resolve("relative-agent"));
 });
 
-test("isBrokerHealthOkMessage requires the intercom protocol marker", () => {
-  assert.equal(isBrokerHealthOkMessage({ type: "health_ok", requestId: "req-1", protocol: "pi-intercom", version: 3 }, "req-1"), true);
-  assert.equal(isBrokerHealthOkMessage({ type: "health_ok", requestId: "req-1" }, "req-1"), false);
-  assert.equal(isBrokerHealthOkMessage({ type: "health_ok", requestId: "req-2", protocol: "pi-intercom", version: 3 }, "req-1"), false);
+test("isBrokerHealthOkMessage pins the remote policy semantic contract", () => {
+  const compatible = {
+    type: "health_ok",
+    requestId: "req-1",
+    protocol: "pi-intercom",
+    version: 3,
+    remoteAccess: {
+      feature: "remote-access-v1",
+      policySemanticsVersion: 1,
+      policySemanticsHash: "78178a5fd57c353342642968d3a27262ed02cb236927723675d875959413dce3",
+    },
+  };
+  assert.equal(isBrokerHealthOkMessage(compatible, "req-1"), true);
+  assert.equal(isBrokerHealthOkMessage({ ...compatible, remoteAccess: undefined }, "req-1"), false);
+  assert.equal(isBrokerHealthOkMessage({ ...compatible, remoteAccess: { ...compatible.remoteAccess, policySemanticsHash: "wrong" } }, "req-1"), false);
+  assert.equal(isBrokerHealthOkMessage({ ...compatible, requestId: "req-2" }, "req-1"), false);
   assert.equal(isBrokerHealthOkMessage("ok", "req-1"), false);
 });
 

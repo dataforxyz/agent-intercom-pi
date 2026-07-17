@@ -7,11 +7,15 @@ import {
   ensureIntercomRuntimeDir,
   getAgentDirPath,
   getBrokerConnectTarget,
+  getBrokerAccessStateFilePath,
+  getBrokerAdminCredentialFilePath,
   getBrokerAskStateFilePath,
+  getBrokerAuditFilePath,
   getBrokerListenTarget,
   getBrokerPortFilePath,
   getBrokerSocketPath,
   getIntercomDirPath,
+  getRemoteGatewaySocketPath,
   INTERCOM_DIR_MODE,
   INTERCOM_RUNTIME_FILE_MODE,
   INTERCOM_TCP_HOST,
@@ -37,6 +41,9 @@ test("getAgentDirPath resolves relative PI_CODING_AGENT_DIR values from the call
 test("getIntercomDirPath points at the intercom runtime directory under the agent dir", () => {
   assert.equal(getIntercomDirPath("/tmp/pi-agent"), join("/tmp/pi-agent", "intercom"));
   assert.equal(getBrokerAskStateFilePath("/tmp/pi-agent/intercom"), join("/tmp/pi-agent/intercom", "broker-asks.json"));
+  assert.equal(getBrokerAccessStateFilePath("/tmp/pi-agent/intercom"), join("/tmp/pi-agent/intercom", "broker-access.json"));
+  assert.equal(getBrokerAdminCredentialFilePath("/tmp/pi-agent/intercom"), join("/tmp/pi-agent/intercom", "broker-admin.json"));
+  assert.equal(getBrokerAuditFilePath("/tmp/pi-agent/intercom"), join("/tmp/pi-agent/intercom", "broker-audit.jsonl"));
 });
 
 test("getBrokerSocketPath uses named pipe on Windows", () => {
@@ -45,9 +52,12 @@ test("getBrokerSocketPath uses named pipe on Windows", () => {
   assert.doesNotMatch(pipePath, /broker\.sock$/);
 });
 
-test("getBrokerSocketPath uses broker.sock under PI_CODING_AGENT_DIR on non-Windows", () => {
+test("local and remote broker sockets are physically distinct", () => {
   const socketPath = getBrokerSocketPath("linux", "/tmp/pi-agent");
+  const remotePath = getRemoteGatewaySocketPath("linux", "/tmp/pi-agent");
   assert.equal(socketPath, join("/tmp/pi-agent", "intercom", "broker.sock"));
+  assert.equal(remotePath, join("/tmp/pi-agent", "intercom", "remote-gateway.sock"));
+  assert.notEqual(socketPath, remotePath);
 });
 
 test("Windows TCP transport is opt-in", () => {

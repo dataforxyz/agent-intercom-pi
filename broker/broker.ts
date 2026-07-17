@@ -2,13 +2,17 @@ import net from "net";
 import { existsSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
+import { POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION, type PolicyAction } from "@dataforxyz/agent-intercom-core";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import {
   ensureIntercomRuntimeDir,
+  getBrokerAccessStateFilePath,
+  getBrokerAdminCredentialFilePath,
   getBrokerAskStateFilePath,
   getBrokerListenTarget,
   getBrokerPortFilePath,
   getIntercomDirPath,
+  getRemoteGatewaySocketPath,
   INTERCOM_PROTOCOL_NAME,
   INTERCOM_PROTOCOL_VERSION,
   INTERCOM_RUNTIME_FILE_MODE,
@@ -18,6 +22,8 @@ import {
 import { getAskTimeoutMs } from "../config.ts";
 import { writeDurableJson } from "../durable-json.ts";
 import { acquireBrokerOwnership, hasBrokerOwnership, releaseBrokerOwnership } from "./ownership.ts";
+import { RemoteAccessRegistry, type RemotePrincipalRecord } from "./access-registry.ts";
+import { authorizeSessionAction, visibleSessions } from "./authorization.ts";
 import type {
   AskCancellationReason,
   BrokerErrorCode,
@@ -31,16 +37,21 @@ import type {
 
 const INTERCOM_DIR = getIntercomDirPath();
 const LISTEN_TARGET = getBrokerListenTarget();
+const REMOTE_LISTEN_TARGET = getRemoteGatewaySocketPath();
 const PID_PATH = join(INTERCOM_DIR, "broker.pid");
 const OWNER_PATH = join(INTERCOM_DIR, "broker.owner");
 const PORT_PATH = getBrokerPortFilePath(INTERCOM_DIR);
 const ASK_STATE_PATH = getBrokerAskStateFilePath(INTERCOM_DIR);
+const ACCESS_STATE_PATH = getBrokerAccessStateFilePath(INTERCOM_DIR);
+const ADMIN_CREDENTIAL_PATH = getBrokerAdminCredentialFilePath(INTERCOM_DIR);
 const BROKER_STATE_ID = randomUUID();
 const MAX_SESSIONS = 128;
 const MAX_UNREGISTERED_CONNECTIONS = 32;
 const REGISTRATION_TIMEOUT_MS = 1000;
 const RATE_LIMIT_CAPACITY = 240;
 const RATE_LIMIT_REFILL_PER_SECOND = 120;
+const REMOTE_RATE_LIMIT_CAPACITY = 60;
+const REMOTE_RATE_LIMIT_REFILL_PER_SECOND = 30;
 const PRESENCE_HEARTBEAT_MS = 1000;
 const DELIVERY_ACK_TIMEOUT_MS = 8000;
 const RECENT_DELIVERY_TTL_MS = 10 * 60 * 1000;
@@ -64,9 +75,13 @@ interface ConnectedSession {
   lastPresenceBroadcastAt: number;
 }
 
+type ConnectionOrigin = "local" | "remote";
+
 interface ConnectionState {
   socket: net.Socket;
+  origin: ConnectionOrigin;
   tokens: number;
+  refillPerSecond: number;
   lastRefillAt: number;
 }
 
@@ -98,6 +113,9 @@ interface PendingDelivery {
   to: string;
   senderSocket: net.Socket;
   recipientSocket: net.Socket;
+  action: PolicyAction;
+  fromGeneration: number;
+  toGeneration: number;
   timeout: NodeJS.Timeout;
 }
 
@@ -227,25 +245,42 @@ class IntercomBroker {
   private connections = new Set<net.Socket>();
   private unregisteredConnections = new Set<net.Socket>();
   private server: net.Server;
+  private remoteServer: net.Server | null = null;
   private shutdownTimer: NodeJS.Timeout | null = null;
   private readonly askTimeoutMs = getAskTimeoutMs();
+  private readonly accessRegistry: RemoteAccessRegistry;
 
   constructor() {
     ensureIntercomRuntimeDir(INTERCOM_DIR);
     acquireBrokerOwnership(OWNER_PATH);
+    this.accessRegistry = new RemoteAccessRegistry(ACCESS_STATE_PATH);
+    this.accessRegistry.ensureAdminCredential(ADMIN_CREDENTIAL_PATH);
     this.loadAskEdges();
     if (typeof LISTEN_TARGET === "string" && process.platform !== "win32") {
-      try {
-        unlinkSync(LISTEN_TARGET);
-      } catch {
-        // A clean startup has no stale socket to remove.
+      for (const socketPath of [LISTEN_TARGET, REMOTE_LISTEN_TARGET]) {
+        try {
+          unlinkSync(socketPath);
+        } catch {
+          // A clean startup has no stale socket to remove.
+        }
       }
     }
-    this.server = net.createServer(this.handleConnection.bind(this));
+    this.server = net.createServer((socket) => this.handleConnection(socket, "local"));
+    if (process.platform !== "win32" && typeof LISTEN_TARGET === "string") {
+      this.remoteServer = net.createServer((socket) => this.handleConnection(socket, "remote"));
+    }
   }
 
   start(): void {
-    const onListening = () => {
+    let localListening = false;
+    let remoteListening = this.remoteServer === null;
+    const announceWhenReady = () => {
+      if (!localListening || !remoteListening) return;
+      writeFileSync(PID_PATH, String(process.pid), { mode: INTERCOM_RUNTIME_FILE_MODE });
+      restrictIntercomRuntimeFile(PID_PATH);
+      console.log(`Intercom broker started (pid: ${process.pid}, remote-access-v1)`);
+    };
+    const onLocalListening = () => {
       if (typeof LISTEN_TARGET === "string") {
         restrictIntercomRuntimeFile(LISTEN_TARGET);
       } else {
@@ -262,21 +297,27 @@ class IntercomBroker {
         writeFileSync(PORT_PATH, `${JSON.stringify(endpoint)}\n`, { mode: INTERCOM_RUNTIME_FILE_MODE });
         restrictIntercomRuntimeFile(PORT_PATH);
       }
-      writeFileSync(PID_PATH, String(process.pid), { mode: INTERCOM_RUNTIME_FILE_MODE });
-      restrictIntercomRuntimeFile(PID_PATH);
-      console.log(`Intercom broker started (pid: ${process.pid})`);
+      localListening = true;
+      announceWhenReady();
     };
 
     if (typeof LISTEN_TARGET === "string") {
-      this.server.listen(LISTEN_TARGET, onListening);
+      this.server.listen(LISTEN_TARGET, onLocalListening);
     } else {
-      this.server.listen({ host: LISTEN_TARGET.host, port: LISTEN_TARGET.port }, onListening);
+      this.server.listen({ host: LISTEN_TARGET.host, port: LISTEN_TARGET.port }, onLocalListening);
+    }
+    if (this.remoteServer) {
+      this.remoteServer.listen(REMOTE_LISTEN_TARGET, () => {
+        restrictIntercomRuntimeFile(REMOTE_LISTEN_TARGET);
+        remoteListening = true;
+        announceWhenReady();
+      });
     }
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
   }
 
-  private handleConnection(socket: net.Socket): void {
+  private handleConnection(socket: net.Socket, origin: ConnectionOrigin): void {
     this.connections.add(socket);
     let sessionId: string | null = null;
     let registrationTimeout: NodeJS.Timeout | null = null;
@@ -304,7 +345,9 @@ class IntercomBroker {
     armRegistrationTimeout();
     const connection: ConnectionState = {
       socket,
-      tokens: RATE_LIMIT_CAPACITY,
+      origin,
+      tokens: origin === "remote" ? REMOTE_RATE_LIMIT_CAPACITY : RATE_LIMIT_CAPACITY,
+      refillPerSecond: origin === "remote" ? REMOTE_RATE_LIMIT_REFILL_PER_SECOND : RATE_LIMIT_REFILL_PER_SECOND,
       lastRefillAt: Date.now(),
     };
 
@@ -316,7 +359,7 @@ class IntercomBroker {
         return;
       }
       try {
-        this.handleMessage(socket, msg, sessionId, (id) => {
+        this.handleMessage(socket, origin, msg, sessionId, (id) => {
           sessionId = id;
           if (id) {
             clearRegistrationTimeout();
@@ -345,10 +388,10 @@ class IntercomBroker {
       if (sessionId) {
         const existing = this.sessions.get(sessionId);
         if (existing?.socket === socket) {
+          this.broadcastVisible({ type: "session_left", sessionId }, existing.info, sessionId);
           this.sessions.delete(sessionId);
           this.clearPendingDeliveriesForSession(sessionId, socket);
           this.deferAskEdgesForSession(sessionId);
-          this.broadcast({ type: "session_left", sessionId }, sessionId);
           this.scheduleShutdownCheck();
         }
       }
@@ -377,8 +420,8 @@ class IntercomBroker {
     const elapsedMs = now - connection.lastRefillAt;
     if (elapsedMs > 0) {
       connection.tokens = Math.min(
-        RATE_LIMIT_CAPACITY,
-        connection.tokens + elapsedMs * RATE_LIMIT_REFILL_PER_SECOND / 1000,
+        connection.origin === "remote" ? REMOTE_RATE_LIMIT_CAPACITY : RATE_LIMIT_CAPACITY,
+        connection.tokens + elapsedMs * connection.refillPerSecond / 1000,
       );
       connection.lastRefillAt = now;
     }
@@ -417,6 +460,7 @@ class IntercomBroker {
 
   private handleMessage(
     socket: net.Socket,
+    origin: ConnectionOrigin,
     msg: unknown,
     currentId: string | null,
     setId: (id: string | null) => void,
@@ -441,7 +485,18 @@ class IntercomBroker {
         requestId: clientMessage.requestId,
         protocol: INTERCOM_PROTOCOL_NAME,
         version: INTERCOM_PROTOCOL_VERSION,
+        remoteAccess: this.remoteAccessContract(),
       });
+      return;
+    }
+
+    if (clientMessage.type === "access_control") {
+      if (origin !== "local" || currentId !== null) {
+        this.sendError(socket, "ACCESS_DENIED", "Remote access control is unavailable on this connection");
+        socket.end();
+        return;
+      }
+      this.handleAccessControl(socket, clientMessage);
       return;
     }
 
@@ -451,6 +506,11 @@ class IntercomBroker {
 
     if (currentId === null && clientMessage.type !== "register") {
       throw new Error(`Received ${clientMessage.type} before register`);
+    }
+    if (currentId && !this.isCurrentPrincipal(currentId)) {
+      this.sendError(socket, "ACCESS_DENIED", "Remote session authorization is no longer valid");
+      socket.destroy();
+      return;
     }
 
     switch (clientMessage.type) {
@@ -476,27 +536,86 @@ class IntercomBroker {
           throw new Error("Received duplicate register message");
         }
         
-        let id: string = randomUUID();
-        if (clientMessage.sessionId !== undefined) {
-          if (!isSessionId(clientMessage.sessionId)) {
-            throw new Error("Invalid register sessionId");
+        let id: string;
+        let remotePrincipal: RemotePrincipalRecord | undefined;
+        let issuedSessionCredential: string | undefined;
+        if (origin === "remote") {
+          if (this.sessions.size >= MAX_SESSIONS) {
+            this.sendError(socket, "TOO_MANY_SESSIONS", "Too many registered intercom sessions");
+            socket.destroy();
+            break;
           }
-          id = clientMessage.sessionId;
-        }
-        const previous = this.sessions.get(id);
-        if (!previous && this.sessions.size >= MAX_SESSIONS) {
-          this.sendError(socket, "TOO_MANY_SESSIONS", "Too many registered intercom sessions");
-          socket.destroy();
-          break;
-        }
-        if (previous) {
-          this.clearPendingDeliveriesForSession(id, previous.socket);
-          this.deferAskEdgesForSession(id);
-          previous.socket.end();
+          const access = clientMessage.access;
+          if (typeof access !== "object" || access === null || Array.isArray(access)) {
+            this.sendError(socket, "ACCESS_DENIED", "Remote registration requires an access credential");
+            socket.end();
+            break;
+          }
+          const fields = access as Record<string, unknown>;
+          try {
+            if (typeof fields.enrollmentToken === "string") {
+              const consumed = this.accessRegistry.consumeEnrollment(fields.enrollmentToken);
+              remotePrincipal = consumed.principal;
+              issuedSessionCredential = consumed.sessionCredential;
+            } else if (
+              typeof fields.sessionCredential === "string"
+              && typeof fields.sessionId === "string"
+              && typeof fields.generation === "number"
+              && Number.isSafeInteger(fields.generation)
+            ) {
+              remotePrincipal = this.accessRegistry.authenticateSession(fields.sessionId, fields.generation, fields.sessionCredential);
+            } else {
+              throw new Error("Invalid remote access credential shape");
+            }
+          } catch {
+            this.sendError(socket, "ACCESS_DENIED", "Remote registration credential was rejected");
+            socket.end();
+            break;
+          }
+          id = remotePrincipal.id;
+          if (this.sessions.has(id)) {
+            this.sendError(socket, "ACCESS_DENIED", "Remote session credential is already active");
+            socket.end();
+            break;
+          }
+        } else {
+          id = randomUUID();
+          if (clientMessage.sessionId !== undefined) {
+            if (!isSessionId(clientMessage.sessionId)) {
+              throw new Error("Invalid register sessionId");
+            }
+            id = clientMessage.sessionId;
+          }
+          const previous = this.sessions.get(id);
+          if (!previous && this.sessions.size >= MAX_SESSIONS) {
+            this.sendError(socket, "TOO_MANY_SESSIONS", "Too many registered intercom sessions");
+            socket.destroy();
+            break;
+          }
+          if (previous) {
+            this.clearPendingDeliveriesForSession(id, previous.socket);
+            this.deferAskEdgesForSession(id);
+            previous.socket.end();
+          }
         }
         setId(id);
         const session = clientMessage.session;
-        const info: SessionInfo = {
+        const info: SessionInfo = remotePrincipal ? {
+          id,
+          name: remotePrincipal.name,
+          cwd: session.cwd,
+          model: session.model,
+          pid: session.pid,
+          startedAt: session.startedAt,
+          lastActivity: session.lastActivity,
+          ...(session.status !== undefined ? { status: session.status } : {}),
+          trustedLocal: false,
+          origin: "remote",
+          remoteHostId: remotePrincipal.remoteHostId,
+          parentSessionId: remotePrincipal.parentSessionId,
+          rootSessionId: remotePrincipal.rootSessionId,
+          generation: remotePrincipal.generation,
+        } : {
           id,
           ...(session.name !== undefined ? { name: session.name } : {}),
           cwd: session.cwd,
@@ -506,9 +625,10 @@ class IntercomBroker {
           lastActivity: session.lastActivity,
           ...(session.status !== undefined ? { status: session.status } : {}),
           trustedLocal: typeof LISTEN_TARGET === "string" && process.platform !== "win32",
+          origin: "local",
         };
         this.sessions.set(id, { socket, info, lastPresenceBroadcastAt: Date.now() });
-        
+
         if (this.shutdownTimer) {
           clearTimeout(this.shutdownTimer);
           this.shutdownTimer = null;
@@ -519,8 +639,19 @@ class IntercomBroker {
           sessionId: id,
           protocol: INTERCOM_PROTOCOL_NAME,
           version: INTERCOM_PROTOCOL_VERSION,
+          ...(remotePrincipal ? {
+            remoteAccess: this.remoteAccessContract(),
+            access: {
+              origin: "remote",
+              remoteHostId: remotePrincipal.remoteHostId,
+              parentSessionId: remotePrincipal.parentSessionId,
+              rootSessionId: remotePrincipal.rootSessionId,
+              generation: remotePrincipal.generation,
+              ...(issuedSessionCredential ? { sessionCredential: issuedSessionCredential } : {}),
+            },
+          } : {}),
         });
-        this.broadcast({ type: "session_joined", session: info }, id);
+        this.broadcastVisible({ type: "session_joined", session: info }, info, id);
         break;
       }
 
@@ -533,6 +664,7 @@ class IntercomBroker {
         }
         const existing = this.sessions.get(currentId);
         if (existing?.socket === socket) {
+          this.broadcastVisible({ type: "session_left", sessionId: currentId }, existing.info, currentId);
           this.sessions.delete(currentId);
           this.clearPendingDeliveriesForSession(currentId, socket);
           if (clientMessage.preserveAsks) {
@@ -540,7 +672,6 @@ class IntercomBroker {
           } else {
             this.clearAskEdgesForSession(currentId, "session_disconnected");
           }
-          this.broadcast({ type: "session_left", sessionId: currentId }, currentId);
           this.scheduleShutdownCheck();
         }
         setId(null);
@@ -552,7 +683,7 @@ class IntercomBroker {
           throw new Error("Invalid list message");
         }
 
-        const sessions = Array.from(this.sessions.values()).map(s => s.info);
+        const sessions = visibleSessions(Array.from(this.sessions.values(), (session) => session.info), currentId!);
         writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
         break;
       }
@@ -628,7 +759,8 @@ class IntercomBroker {
           break;
         }
 
-        const targets = this.findSessions(clientMessage.to);
+        const action: PolicyAction = message.replyTo ? "reply" : message.expectsReply ? "ask" : "send";
+        const targets = this.findSessions(clientMessage.to).filter((target) => this.isAuthorized(currentId, action, target.info.id));
         if (targets.length === 1) {
           const fromSession = this.sessions.get(currentId);
           if (!fromSession || fromSession.socket !== socket) {
@@ -686,6 +818,9 @@ class IntercomBroker {
             to: target.info.id,
             senderSocket: socket,
             recipientSocket: target.socket,
+            action,
+            fromGeneration: fromSession.info.generation ?? 1,
+            toGeneration: target.info.generation ?? 1,
             timeout,
           };
           this.pendingDeliveries.set(deliveryId, pending);
@@ -753,7 +888,7 @@ class IntercomBroker {
         }
         const edge = this.askEdges.get(this.askKey(currentId, clientMessage.messageId));
         const applied = Boolean(edge?.from === currentId);
-        if (applied && edge.state === "blocking") {
+        if (edge?.from === currentId && edge.state === "blocking") {
           edge.state = "deferred";
           this.persistAskEdges();
           this.notifyAskDeferred(edge);
@@ -796,7 +931,7 @@ class IntercomBroker {
             if (typeof clientMessage.name !== "string" || clientMessage.name.length > MAX_SESSION_NAME_LENGTH) {
               throw new Error("Invalid presence name");
             }
-            if (session.info.name !== clientMessage.name) {
+            if (session.info.origin !== "remote" && session.info.name !== clientMessage.name) {
               session.info.name = clientMessage.name;
               changed = true;
             }
@@ -823,7 +958,7 @@ class IntercomBroker {
           session.info.lastActivity = now;
           if (changed || now - session.lastPresenceBroadcastAt >= PRESENCE_HEARTBEAT_MS) {
             session.lastPresenceBroadcastAt = now;
-            this.broadcast({ type: "presence_update", session: session.info }, currentId);
+            this.broadcastVisible({ type: "presence_update", session: session.info }, session.info, currentId);
           }
         }
         break;
@@ -831,6 +966,95 @@ class IntercomBroker {
 
       default:
         throw new Error(`Unknown client message type: ${clientMessage.type}`);
+    }
+  }
+
+  private remoteAccessContract() {
+    return {
+      feature: "remote-access-v1" as const,
+      policySemanticsVersion: POLICY_SEMANTICS_VERSION,
+      policySemanticsHash: POLICY_SEMANTICS_HASH,
+    };
+  }
+
+  private handleAccessControl(socket: net.Socket, message: Record<string, unknown>): void {
+    if (
+      typeof message.requestId !== "string"
+      || message.requestId.length > MAX_MESSAGE_ID_LENGTH
+      || typeof message.adminToken !== "string"
+      || !this.accessRegistry.authenticateAdmin(message.adminToken)
+      || message.action !== "issue_enrollment"
+      || typeof message.enrollment !== "object"
+      || message.enrollment === null
+      || Array.isArray(message.enrollment)
+    ) {
+      this.sendError(socket, "ACCESS_DENIED", "Remote access control credential or request was rejected");
+      socket.end();
+      return;
+    }
+    const enrollment = message.enrollment as Record<string, unknown>;
+    if (
+      typeof enrollment.name !== "string"
+      || typeof enrollment.parentSessionId !== "string"
+      || typeof enrollment.rootSessionId !== "string"
+      || typeof enrollment.remoteHostId !== "string"
+      || (enrollment.ttlMs !== undefined && (typeof enrollment.ttlMs !== "number" || !Number.isSafeInteger(enrollment.ttlMs)))
+      || (enrollment.expiresAt !== undefined && (typeof enrollment.expiresAt !== "number" || !Number.isSafeInteger(enrollment.expiresAt)))
+    ) {
+      this.sendError(socket, "INVALID_REQUEST", "Invalid remote enrollment request");
+      socket.end();
+      return;
+    }
+    const parent = this.sessions.get(enrollment.parentSessionId);
+    if (!parent || parent.info.origin === "remote" || enrollment.rootSessionId !== parent.info.id) {
+      this.sendError(socket, "ACCESS_DENIED", "Enrollment parent must be an active local root session");
+      socket.end();
+      return;
+    }
+    const issued = this.accessRegistry.issueEnrollment({
+      name: enrollment.name,
+      parentSessionId: parent.info.id,
+      rootSessionId: parent.info.id,
+      remoteHostId: enrollment.remoteHostId,
+      ...(enrollment.expiresAt !== undefined ? { expiresAt: enrollment.expiresAt as number } : {}),
+    }, enrollment.ttlMs as number | undefined);
+    writeMessage(socket, {
+      type: "access_control_result",
+      requestId: message.requestId,
+      action: "issue_enrollment",
+      enrollmentToken: issued.enrollmentToken,
+      expiresAt: issued.expiresAt,
+    });
+    socket.end();
+  }
+
+  private isCurrentPrincipal(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    if (session.info.origin !== "remote") return true;
+    try {
+      this.accessRegistry.validatePrincipal(sessionId, session.info.generation ?? 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private isAuthorized(actorId: string, action: PolicyAction, targetId: string): boolean {
+    if (!this.isCurrentPrincipal(actorId) || !this.isCurrentPrincipal(targetId)) return false;
+    return authorizeSessionAction(
+      Array.from(this.sessions.values(), (session) => session.info),
+      actorId,
+      action,
+      targetId,
+    ).allowed;
+  }
+
+  private broadcastVisible(message: BrokerMessage, subject: SessionInfo, exclude?: string): void {
+    for (const [id, session] of this.sessions) {
+      if (id !== exclude && this.isAuthorized(id, "discover", subject.id)) {
+        writeMessage(session.socket, message);
+      }
     }
   }
 
@@ -1056,6 +1280,18 @@ class IntercomBroker {
     if (!pending || pending.to !== sessionId || pending.recipientSocket !== socket) {
       return;
     }
+    const sender = this.sessions.get(pending.from);
+    const recipient = this.sessions.get(pending.to);
+    if (
+      !sender
+      || !recipient
+      || (sender.info.generation ?? 1) !== pending.fromGeneration
+      || (recipient.info.generation ?? 1) !== pending.toGeneration
+      || !this.isAuthorized(pending.from, pending.action, pending.to)
+    ) {
+      this.failPendingDelivery(deliveryId, "SESSION_NOT_FOUND", "Delivery authorization changed before acknowledgement");
+      return;
+    }
 
     clearTimeout(pending.timeout);
     this.pendingDeliveries.delete(deliveryId);
@@ -1070,8 +1306,7 @@ class IntercomBroker {
       response,
       expiresAt: Date.now() + RECENT_DELIVERY_TTL_MS,
     });
-    const sender = this.sessions.get(pending.from);
-    if (sender?.socket === pending.senderSocket) {
+    if (sender.socket === pending.senderSocket) {
       writeMessage(sender.socket, response);
     }
   }
@@ -1142,14 +1377,6 @@ class IntercomBroker {
       .map(([, session]) => session);
   }
 
-  private broadcast(msg: BrokerMessage, exclude?: string): void {
-    for (const [id, session] of this.sessions) {
-      if (id !== exclude) {
-        writeMessage(session.socket, msg);
-      }
-    }
-  }
-
   private shutdown(): void {
     console.log("Broker shutting down");
     
@@ -1168,10 +1395,12 @@ class IntercomBroker {
     this.askEdges.clear();
     const ownsBroker = hasBrokerOwnership(OWNER_PATH);
     if (ownsBroker && typeof LISTEN_TARGET === "string" && process.platform !== "win32") {
-      try {
-        unlinkSync(LISTEN_TARGET);
-      } catch {
-        // The socket may already be gone if shutdown started after a disconnect.
+      for (const socketPath of [LISTEN_TARGET, REMOTE_LISTEN_TARGET]) {
+        try {
+          unlinkSync(socketPath);
+        } catch {
+          // The socket may already be gone if shutdown started after a disconnect.
+        }
       }
     }
     if (ownsBroker) {
@@ -1188,6 +1417,7 @@ class IntercomBroker {
       releaseBrokerOwnership(OWNER_PATH);
     }
     this.server.close();
+    this.remoteServer?.close();
     process.exit(0);
   }
 }
