@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a generic structured-control transport hook for companion extensions: bounded versioned envelopes, durable consume-before-dispatch semantics, broker-verified sender IDs, target resolution, registration-order grace, unthreaded-control validation, and delivery events without model-context injection for registered control types.
 - Add ID-free `oldest`/`latest` selection for multiple pending asks from one sender, hide protocol IDs from pending output, and refuse a second unresolved ask to the same recipient.
 - Allow independent blocking asks to wait concurrently across different recipients while retaining one unresolved ask per recipient, and clarify that progress/status checkpoints use `intercom_send`.
 

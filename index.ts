@@ -15,6 +15,17 @@ import type { SessionInfo, Message, Attachment } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { InboundMessageConflictError, PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
 import { formatIntercomTeam, resolveIntercomTeam } from "./team.ts";
+import {
+  INTERCOM_CONTROL_DELIVERY_EVENT,
+  INTERCOM_CONTROL_RECEIVED_EVENT,
+  INTERCOM_CONTROL_REGISTER_EVENT,
+  INTERCOM_CONTROL_SEND_EVENT,
+  intercomControlKey,
+  parseIntercomControlRegistration,
+  parseIntercomControlSendRequest,
+  type IntercomControlDeliveryEvent,
+  type IntercomControlReceivedEvent,
+} from "./control.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -22,6 +33,7 @@ const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delive
 const INBOUND_BATCH_QUIET_MS = 300;
 const INBOUND_BATCH_MAX_LATENCY_MS = 1000;
 const INBOUND_IDLE_RETRY_MS = 500;
+const CONTROL_REGISTRATION_GRACE_MS = 250;
 const DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX = "subagent-chat";
 const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
 const SUBAGENT_ORCHESTRATOR_SESSION_ID_ENV = "PI_SUBAGENT_ORCHESTRATOR_SESSION_ID";
@@ -595,10 +607,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let agentRunning = false;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker();
+  const registeredControlTypes = new Set<string>();
   let inboundInbox: PersistentInboundInbox | null = null;
   let inboundFirstQueuedAt: number | null = null;
   let inboundLastQueuedAt: number | null = null;
   let inboundFlushTimer: NodeJS.Timeout | null = null;
+  let controlRegistrationGraceUntil = 0;
   const replyWaiters = new Map<string, {
     from: string;
     replyTo: string;
@@ -889,10 +903,20 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
 
     const stored = inboundInbox.list();
-    const entries = stored.map((entry) => entryFromStoredMessage(entry, stored.length));
+    const regularMessages = stored.filter((entry) => !deliverRegisteredControl(entry));
+    if (regularMessages.length === 0) return;
+    const registrationGraceRemaining = controlRegistrationGraceUntil - Date.now();
+    if (
+      registrationGraceRemaining > 0
+      && regularMessages.some((entry) => Boolean(entry.message.content.control))
+    ) {
+      scheduleInboundFlush(registrationGraceRemaining);
+      return;
+    }
+    const entries = regularMessages.map((entry) => entryFromStoredMessage(entry, regularMessages.length));
     try {
       sendIncomingBatch(entries, generation);
-      inboundInbox.consume(stored.map((entry) => entry.key));
+      inboundInbox.consume(regularMessages.map((entry) => entry.key));
       refreshInboundBatchWindow();
       syncPresenceStatus();
     } catch (error) {
@@ -903,6 +927,49 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       });
       scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
     }
+  }
+  function deliverRegisteredControl(stored: StoredInboundMessage): boolean {
+    const control = stored.message.content.control;
+    if (!control || !registeredControlTypes.has(intercomControlKey(control))) {
+      return false;
+    }
+    const inboxAtDelivery = inboundInbox;
+    if (!inboxAtDelivery) return false;
+
+    // Persist consumption before notifying another extension. If the control
+    // triggers a runtime reload, reconnect/replay must not deliver it twice.
+    inboxAtDelivery.consume([stored.key]);
+    refreshInboundBatchWindow();
+    syncPresenceStatus();
+
+    const event: IntercomControlReceivedEvent = {
+      from: {
+        id: stored.from.id,
+        ...(stored.from.name ? { name: stored.from.name } : {}),
+        cwd: stored.from.cwd,
+        model: stored.from.model,
+        ...(stored.from.origin ? { origin: stored.from.origin } : {}),
+        ...(stored.from.parentSessionId ? { parentSessionId: stored.from.parentSessionId } : {}),
+        ...(stored.from.rootSessionId ? { rootSessionId: stored.from.rootSessionId } : {}),
+      },
+      messageId: stored.message.id,
+      receivedAt: stored.receivedAt,
+      control,
+    };
+
+    try {
+      pi.events.emit(INTERCOM_CONTROL_RECEIVED_EVENT, event);
+    } catch (error) {
+      pi.appendEntry("intercom_control_handler_error", {
+        from: stored.from.id,
+        messageId: stored.message.id,
+        controlType: control.type,
+        controlVersion: control.version,
+        error: getErrorMessage(error),
+        timestamp: Date.now(),
+      });
+    }
+    return true;
   }
   async function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message, deliveryId: string, receivingClient: IntercomClient): Promise<void> {
     const messageGeneration = runtimeGeneration;
@@ -928,6 +995,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     receivingClient.acknowledgeMessage(deliveryId);
     if (enqueued.duplicate) return;
+    if (deliverRegisteredControl(enqueued.entry)) return;
 
     const replyWaiter = message.replyTo ? replyWaiters.get(message.replyTo) : undefined;
     if (replyWaiter) {
@@ -1151,6 +1219,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     runtimeContext = ctx;
     currentSessionId = ctx.sessionManager.getSessionId();
     inboundInbox = new PersistentInboundInbox(currentSessionId);
+    controlRegistrationGraceUntil = Date.now() + CONTROL_REGISTRATION_GRACE_MS;
     inboundInbox.prunePendingAsks(getAskTimeoutMs());
     const recoveredMessages = inboundInbox.list();
     for (const recovered of recoveredMessages) {
@@ -1182,6 +1251,62 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         scheduleReconnect();
       });
     }, 0);
+  }
+  function emitControlDelivery(event: IntercomControlDeliveryEvent): void {
+    pi.events.emit(INTERCOM_CONTROL_DELIVERY_EVENT, event);
+  }
+  function relayControlSendRequest(payload: unknown): void {
+    const parsed = parseIntercomControlSendRequest(payload);
+    if (!parsed) return;
+
+    const relayGeneration = runtimeGeneration;
+    void (async () => {
+      const relayStillLive = () => !runtimeStarted || Boolean(getLiveContext(runtimeContext, relayGeneration));
+      if (!relayStillLive()) return;
+
+      let activeClient: IntercomClient;
+      let target: string;
+      try {
+        activeClient = await ensureConnected("background");
+        target = await resolveSessionTarget(activeClient, parsed.to) ?? parsed.to;
+        if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
+          throw new Error("Intercom controls cannot target the current session");
+        }
+      } catch (error) {
+        if (!relayStillLive()) return;
+        emitControlDelivery({
+          requestId: parsed.requestId,
+          delivered: false,
+          error: getErrorMessage(error),
+        });
+        return;
+      }
+
+      try {
+        const result = await activeClient.send(target, {
+          text: parsed.fallbackText ?? `[Intercom control ${parsed.control.type}@${parsed.control.version}; compatible extension required]`,
+          control: parsed.control,
+          messageId: parsed.messageId,
+        });
+        if (!relayStillLive()) return;
+        emitControlDelivery({
+          requestId: parsed.requestId,
+          delivered: result.delivered,
+          targetSessionId: target,
+          messageId: result.id,
+          ...(result.deliveryId ? { deliveryId: result.deliveryId } : {}),
+          ...(result.code ? { code: result.code } : {}),
+          ...(!result.delivered && result.reason ? { error: result.reason } : {}),
+        });
+      } catch (error) {
+        if (!relayStillLive()) return;
+        emitControlDelivery({
+          requestId: parsed.requestId,
+          delivered: false,
+          error: getErrorMessage(error),
+        });
+      }
+    })();
   }
   function emitResultDelivery(requestId: string | undefined, delivered: boolean, error?: unknown): void {
     if (!requestId) return;
@@ -1250,6 +1375,15 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       }
     })();
   }
+  const unsubscribeControlRegistration = pi.events.on(INTERCOM_CONTROL_REGISTER_EVENT, (payload) => {
+    const registration = parseIntercomControlRegistration(payload);
+    if (!registration) return;
+    registeredControlTypes.add(intercomControlKey(registration));
+    if (inboundInbox?.size) scheduleInboundFlush(0);
+  });
+  const unsubscribeControlSend = pi.events.on(INTERCOM_CONTROL_SEND_EVENT, (payload) => {
+    relayControlSendRequest(payload);
+  });
   const unsubscribeSubagentControlIntercom = pi.events.on(SUBAGENT_CONTROL_INTERCOM_EVENT, (payload) => {
     relaySubagentIntercomPayload(payload, {
       sender: "subagent-control",
@@ -1273,6 +1407,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   });
   
   pi.on("session_shutdown", async () => {
+    unsubscribeControlRegistration();
+    unsubscribeControlSend();
     unsubscribeSubagentControlIntercom();
     unsubscribeSubagentResultIntercom();
     shuttingDown = true;
@@ -1288,6 +1424,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     inboundInbox = null;
     inboundFirstQueuedAt = null;
     inboundLastQueuedAt = null;
+    controlRegistrationGraceUntil = 0;
     agentRunning = false;
     activeTools.clear();
     if (client) {
