@@ -1354,8 +1354,8 @@ test("idle recipients receive message bursts as one ordered model turn", { concu
   }
 });
 
-test("registered structured controls bypass model context after durable consumption", { concurrency: false }, async () => {
-  const { default: piIntercomExtension } = await import("./index.ts");
+test("registered structured controls bypass model context and lifecycle activity after durable consumption", { concurrency: false }, async () => {
+  const { default: piIntercomExtension, INTERCOM_INBOUND_ACTIVITY_EVENT } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();
   const harness = createExtensionHarness("control-worker", {
     hasUI: true,
@@ -1365,6 +1365,8 @@ test("registered structured controls bypass model context after durable consumpt
 
   try {
     piIntercomExtension(harness.pi as never);
+    const activity: unknown[] = [];
+    harness.pi.events.on(INTERCOM_INBOUND_ACTIVITY_EVENT, (payload) => activity.push(payload));
     const received = new Promise<IntercomControlReceivedEvent>((resolve) => {
       harness.pi.events.on(INTERCOM_CONTROL_RECEIVED_EVENT, (payload) => resolve(payload as IntercomControlReceivedEvent));
     });
@@ -1390,6 +1392,7 @@ test("registered structured controls bypass model context after durable consumpt
     assert.equal(event.from.id, planner.sessionId);
     assert.equal(event.messageId, "registered-control-1");
     assert.deepEqual(event.control.data, { requestId: "reload-1" });
+    assert.equal(activity.length, 0, "registered controls must not renew worker lifecycle activity");
     assert.equal(harness.sentMessages.length, 0, "registered controls must not enter model context");
   } finally {
     await harness.emitLifecycle("session_shutdown");
@@ -2976,10 +2979,12 @@ test("full ask/reply round-trip works with reply target resolved from current tu
   }
 });
 
-test("replying to an ordinary inbound message sends a plain response", { concurrency: false }, async () => {
-  const { default: piIntercomExtension } = await import("./index.ts");
+test("replying to an ordinary inbound message sends a plain response and emits content-free activity metadata", { concurrency: false }, async () => {
+  const { default: piIntercomExtension, INTERCOM_INBOUND_ACTIVITY_EVENT } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();
   const harness = createExtensionHarness("ordinary-reply-worker");
+  const activity: unknown[] = [];
+  harness.pi.events.on(INTERCOM_INBOUND_ACTIVITY_EVENT, (payload) => activity.push(payload));
 
   try {
     piIntercomExtension(harness.pi as never);
@@ -2992,6 +2997,10 @@ test("replying to an ordinary inbound message sends a plain response", { concurr
     });
     assert.equal(delivered.delivered, true);
     await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(activity.length, 1);
+    assert.equal((activity[0] as any).from.name, "planner");
+    assert.equal((activity[0] as any).message.id, "ordinary-inbound-message");
+    assert.equal(JSON.stringify(activity[0]).includes("This is an update"), false);
     await harness.emitLifecycle("turn_start");
 
     const responseReceived = once(planner, "message") as Promise<[SessionInfo, Message]>;
@@ -3115,6 +3124,15 @@ test("subagent control intercom events wake the current orchestrator session", a
   assert.match(sentMessages[0]?.message.content ?? "", /From subagent-control/);
   assert.match(sentMessages[0]?.message.content ?? "", /worker needs attention in run 78f659a3/);
   assert.equal(sentMessages[0]?.options?.triggerTurn, true);
+
+  pi.events.emit("agent-intercom:lifecycle-send", {
+    to: "orchestrator",
+    message: "Lifecycle checkpoint requested for worker-a.",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sentMessages.length, 2);
+  assert.match(sentMessages[1]?.message.content ?? "", /From fleet-lifecycle/);
+  assert.match(sentMessages[1]?.message.content ?? "", /Lifecycle checkpoint requested/);
 });
 
 test("subagent result intercom events wake the current orchestrator session", async () => {
