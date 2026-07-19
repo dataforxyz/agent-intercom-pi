@@ -26,6 +26,7 @@ import { acquireBrokerOwnership, hasBrokerOwnership, releaseBrokerOwnership } fr
 import { RemoteAccessRegistry, type RemotePrincipalMetadata, type RemotePrincipalRecord } from "./access-registry.ts";
 import { authorizeSessionAction, visibleSessions } from "./authorization.ts";
 import { BrokerAuditLog } from "./audit.ts";
+import { isIntercomControlEnvelope } from "../control.ts";
 import type {
   AskCancellationReason,
   BrokerErrorCode,
@@ -202,12 +203,16 @@ function isMessage(value: unknown): value is Message {
     return false;
   }
 
-  return content.attachments === undefined
+  const attachmentsValid = content.attachments === undefined
     || (
       Array.isArray(content.attachments)
       && content.attachments.length <= MAX_ATTACHMENTS
       && content.attachments.every(isAttachment)
     );
+  const controlValid = content.control === undefined || isIntercomControlEnvelope(content.control);
+  const controlThreadingValid = content.control === undefined
+    || (message.replyTo === undefined && message.expectsReply !== true);
+  return attachmentsValid && controlValid && controlThreadingValid;
 }
 
 function isSessionId(value: unknown): value is string {

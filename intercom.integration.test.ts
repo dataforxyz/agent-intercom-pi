@@ -8,6 +8,14 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { ReplyTracker } from "./reply-tracker.ts";
 import { PersistentInboundInbox } from "./inbound-inbox.ts";
 import type { Message, SessionInfo } from "./types.ts";
+import {
+  INTERCOM_CONTROL_DELIVERY_EVENT,
+  INTERCOM_CONTROL_RECEIVED_EVENT,
+  INTERCOM_CONTROL_REGISTER_EVENT,
+  INTERCOM_CONTROL_SEND_EVENT,
+  type IntercomControlDeliveryEvent,
+  type IntercomControlReceivedEvent,
+} from "./control.ts";
 
 const repoDir = process.cwd();
 const childEnvKeys = [
@@ -727,6 +735,36 @@ test("broker rejects oversized logical messages before delivery", { concurrency:
   }
 });
 
+test("broker rejects malformed, oversized, or threaded structured controls", { concurrency: false }, async () => {
+  const { planner, orchestrator, cleanup } = await setupClients();
+
+  try {
+    const oversized = await planner.send(orchestrator.sessionId!, {
+      messageId: "oversized-control",
+      text: "control fallback",
+      control: {
+        type: "reload-runtime.request",
+        version: 1,
+        data: "x".repeat(17 * 1024),
+      },
+    });
+    assert.equal(oversized.code, "INVALID_MESSAGE");
+
+    const threaded = await planner.send(orchestrator.sessionId!, {
+      messageId: "threaded-control",
+      text: "control fallback",
+      expectsReply: true,
+      control: {
+        type: "reload-runtime.request",
+        version: 1,
+      },
+    });
+    assert.equal(threaded.code, "INVALID_MESSAGE");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("broker disconnects a connection that exceeds the local rate limit", { concurrency: false }, async () => {
   const { cleanup } = await setupClients();
   const raw = await connectRawRegistered("rate-limit-worker-id", "rate-limit-worker");
@@ -1310,6 +1348,209 @@ test("idle recipients receive message bursts as one ordered model turn", { concu
     assert.match(content, /Preserved attachment/);
     const details = delivered.message.details as { entries?: Array<{ message?: Message }> };
     assert.deepEqual(details.entries?.map((entry) => entry.message?.id), ["batch-note-1", "batch-note-2", "batch-note-3"]);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("registered structured controls bypass model context after durable consumption", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("control-worker", {
+    hasUI: true,
+    isIdle: () => false,
+    sessionId: "session-control-worker",
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    const received = new Promise<IntercomControlReceivedEvent>((resolve) => {
+      harness.pi.events.on(INTERCOM_CONTROL_RECEIVED_EVENT, (payload) => resolve(payload as IntercomControlReceivedEvent));
+    });
+    harness.pi.events.emit(INTERCOM_CONTROL_REGISTER_EVENT, {
+      type: "reload-runtime.request",
+      version: 1,
+    });
+    await harness.emitLifecycle("session_start");
+    const target = await waitForSessionByName(planner, "control-worker");
+
+    const result = await planner.send(target.id, {
+      messageId: "registered-control-1",
+      text: "[reload control fallback]",
+      control: {
+        type: "reload-runtime.request",
+        version: 1,
+        data: { requestId: "reload-1" },
+      },
+    });
+    assert.equal(result.delivered, true);
+
+    const event = await received;
+    assert.equal(event.from.id, planner.sessionId);
+    assert.equal(event.messageId, "registered-control-1");
+    assert.deepEqual(event.control.data, { requestId: "reload-1" });
+    assert.equal(harness.sentMessages.length, 0, "registered controls must not enter model context");
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("registered controls recover from the durable inbox after a runtime restart", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const sessionId = "session-recovered-control-worker";
+  const from: SessionInfo = {
+    id: "manager-recovered",
+    name: "manager",
+    cwd: repoDir,
+    model: "test-model",
+    pid: process.pid,
+    startedAt: Date.now(),
+    lastActivity: Date.now(),
+  };
+  const inbox = new PersistentInboundInbox(sessionId);
+  inbox.enqueue(from, {
+    id: "recovered-control-1",
+    timestamp: Date.now(),
+    content: {
+      text: "Recovered reload fallback.",
+      control: {
+        type: "reload-runtime.request",
+        version: 1,
+        data: { requestId: "recovered-reload" },
+      },
+    },
+  });
+  const harness = createExtensionHarness("recovered-control-worker", {
+    hasUI: true,
+    isIdle: () => true,
+    sessionId,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    const received = new Promise<IntercomControlReceivedEvent>((resolve) => {
+      harness.pi.events.on(INTERCOM_CONTROL_RECEIVED_EVENT, (payload) => resolve(payload as IntercomControlReceivedEvent));
+    });
+    await harness.emitLifecycle("session_start");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    harness.pi.events.emit(INTERCOM_CONTROL_REGISTER_EVENT, {
+      type: "reload-runtime.request",
+      version: 1,
+    });
+
+    const event = await received;
+    assert.equal(event.messageId, "recovered-control-1");
+    assert.equal(event.from.id, "manager-recovered");
+    assert.equal(harness.sentMessages.length, 0);
+    assert.equal(new PersistentInboundInbox(sessionId).size, 0);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+  }
+});
+
+test("unregistered structured controls retain a visible compatibility fallback", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("legacy-control-worker", {
+    hasUI: true,
+    isIdle: () => true,
+    sessionId: "session-legacy-control-worker",
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const target = await waitForSessionByName(planner, "legacy-control-worker");
+    await planner.send(target.id, {
+      messageId: "unregistered-control-1",
+      text: "Compatible reload extension required.",
+      control: { type: "reload-runtime.request", version: 1 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Compatible reload extension required/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("control send bus resolves targets and reports transport delivery", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, orchestrator, cleanup } = await setupClients();
+  const harness = createExtensionHarness("control-manager", {
+    hasUI: true,
+    isIdle: () => true,
+    sessionId: "session-control-manager",
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await waitForSessionByName(planner, "control-manager");
+
+    const received = new Promise<Message>((resolve) => {
+      orchestrator.on("message", (_from, message) => {
+        if (message.content.control?.type === "reload-runtime.request") resolve(message);
+      });
+    });
+    const delivery = new Promise<IntercomControlDeliveryEvent>((resolve) => {
+      harness.pi.events.on(INTERCOM_CONTROL_DELIVERY_EVENT, (payload) => resolve(payload as IntercomControlDeliveryEvent));
+    });
+
+    harness.pi.events.emit(INTERCOM_CONTROL_SEND_EVENT, {
+      requestId: "control-delivery-1",
+      to: orchestrator.sessionId,
+      messageId: "control-wire-1",
+      fallbackText: "Compatible reload extension required.",
+      control: {
+        type: "reload-runtime.request",
+        version: 1,
+        data: { requestId: "reload-request-1" },
+      },
+    });
+
+    const [message, delivered] = await Promise.all([received, delivery]);
+    assert.equal(message.id, "control-wire-1");
+    assert.deepEqual(message.content.control?.data, { requestId: "reload-request-1" });
+    assert.equal(delivered.requestId, "control-delivery-1");
+    assert.equal(delivered.delivered, true);
+    assert.equal(delivered.targetSessionId, orchestrator.sessionId);
+    assert.equal(delivered.messageId, "control-wire-1");
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("control send bus rejects the current session as a target", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("self-control-manager", {
+    hasUI: true,
+    isIdle: () => true,
+    sessionId: "session-self-control-manager",
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await waitForSessionByName(planner, "self-control-manager");
+    const delivery = new Promise<IntercomControlDeliveryEvent>((resolve) => {
+      harness.pi.events.on(INTERCOM_CONTROL_DELIVERY_EVENT, (payload) => resolve(payload as IntercomControlDeliveryEvent));
+    });
+    harness.pi.events.emit(INTERCOM_CONTROL_SEND_EVENT, {
+      requestId: "self-control-delivery",
+      to: "session-self-control-manager",
+      control: { type: "reload-runtime.request", version: 1 },
+    });
+
+    const result = await delivery;
+    assert.equal(result.delivered, false);
+    assert.match(result.error ?? "", /current session/);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();

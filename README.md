@@ -183,6 +183,27 @@ The reply hint (enabled by default) points to `intercom_reply({ ... })`, so reci
 
 The sender receives two distinct delivery states in structured tool details: `accepted` means the broker accepted the message for routing, while `delivered` means the receiver durably queued it and acknowledged the delivery. Outbound messages are also written to a durable per-session outbox before transmission. If the broker disconnects between acceptance and receiver acknowledgement, the next connection automatically replays the original target, payload, and message ID. Attachment content is included in the agent-visible body, and delivered messages are rendered inline and stored in Pi session history.
 
+### Structured extension controls
+
+Trusted companion extensions can register structured control types that bypass ordinary model-message injection. Pi Intercom remains only the transport: it validates the bounded control envelope, durably enqueues and acknowledges it, consumes it before dispatch, and emits the broker-verified sender session ID through Pi's in-process event bus. The companion extension owns authorization and the privileged action.
+
+Event contract:
+
+| Event | Direction | Payload |
+|---|---|---|
+| `intercom:control:register` | companion → Intercom | `{ type, version }` |
+| `intercom:control:send` | companion → Intercom | `{ requestId, to, control, fallbackText?, messageId? }` |
+| `intercom:control` | Intercom → companion | `{ from, messageId, receivedAt, control }` |
+| `intercom:control:delivery` | Intercom → companion | `{ requestId, delivered, targetSessionId?, messageId?, deliveryId?, code?, error? }` |
+
+A control envelope is `{ type: string, version: positiveInteger, data?: unknown }`, with a 128-character type limit and a 16 KiB JSON data limit. Register types at extension factory time when possible and again during `session_start` to cover either extension load order. Recovered structured controls receive a short 250 ms registration grace before an unknown type falls back to ordinary message delivery.
+
+Registered controls are consumed in the durable inbox before `intercom:control` is emitted. This prevents reload/reconnect loops when the receiving action tears down the current extension runtime. Control dispatch is therefore intentionally **at most once** after durable receipt: if a companion handler throws after consumption, Pi Intercom records an `intercom_control_handler_error` custom entry but does not replay the privileged action. Companion protocols that need an application-level completion guarantee must send their own result control. Unknown or unregistered controls follow the ordinary message path and retain their plain-text compatibility fallback instead of being silently discarded.
+
+Sender identity in `intercom:control.from.id` comes from the broker delivery frame. Names, CWD, model, PID, and control data remain untrusted metadata. A companion performing a privileged action must authorize the stable sender session ID against its own current policy.
+
+The control bus is intentionally not exposed as a model-facing generic Intercom tool. Companion extensions expose only their specific, reviewed actions.
+
 ## Workflow: Planner-Worker Coordination
 
 The most natural use of pi-intercom is splitting a task between two sessions — one holds the big picture, the other does the hands-on work. When the worker hits an ambiguity ("should I optimize for readability or performance here?"), they ask without losing context.
@@ -508,7 +529,7 @@ Messages use strict `pi-intercom` protocol v3 over length-prefixed JSON on a loc
 
 The receiver acknowledges only after atomically writing the message to its per-session inbox. Delivery is therefore at least once across reconnects and reloads. There is one narrow crash window after a batch is injected into Pi but before its inbox entries are marked consumed; after recovery, that batch can be shown again rather than silently lost.
 
-Session IDs are the trusted addressing key. Duplicate names remain allowed for same-user workflows, but sends to ambiguous names fail and users should target the stable session ID shown by `list`/`status` in trust-sensitive flows. The broker owns local trust metadata such as `trustedLocal`; `peerUid` is reserved for runtimes that can expose real peer credentials and is left unset otherwise. Client-supplied cwd/model/pid/status are display metadata, not authentication.
+Session IDs are the trusted addressing key inside the broker, but local Intercom is still a same-UID trust boundary rather than a cryptographic principal boundary. Duplicate names remain allowed for same-user workflows, but sends to ambiguous names fail and users should target the stable session ID shown by `list`/`status` in trust-sensitive flows. A same-user process can connect to the local broker and register a chosen stable session ID; reconnect semantics allow that registration to replace an existing live socket with the same ID. Consequently, structured-control consumers must treat authorization by sender session ID as protection against accidental or unrelated peer actions—not as protection from a malicious process already running as the same OS user. The broker owns local trust metadata such as `trustedLocal`; `peerUid` is reserved for runtimes that can expose real peer credentials and is left unset otherwise. Client-supplied cwd/model/pid/status are display metadata, not authentication.
 
 Async extension work (startup, inbound flushes, reconnects, overlays, and relays) no-ops if the session shuts down or reloads before it settles.
 
@@ -551,6 +572,7 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 ├── package.json
 ├── index.ts              # Extension entry point
 ├── types.ts              # SessionInfo, Message, protocol types
+├── control.ts            # Bounded structured-control envelopes and event contracts
 ├── config.ts             # Config loading
 ├── durable-json.ts       # Atomic fsync-backed JSON persistence helper
 ├── inbound-inbox.ts      # Durable inbound queue and deduplication

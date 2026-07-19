@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { POLICY_SEMANTICS_HASH, POLICY_SEMANTICS_VERSION } from "@dataforxyz/agent-intercom-core";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import { PersistentOutboundOutbox } from "../outbound-outbox.ts";
+import { isIntercomControlEnvelope, type IntercomControlEnvelope } from "../control.ts";
 import { loadRemoteAccessCredential, writeRemoteSessionCredential, type LoadedRemoteAccessCredential } from "./access-credential.ts";
 import {
   getBrokerConnectTarget,
@@ -23,6 +24,7 @@ import type {
 export interface SendOptions {
   text: string;
   attachments?: Attachment[];
+  control?: IntercomControlEnvelope;
   replyTo?: string;
   expectsReply?: boolean;
   messageId?: string;
@@ -97,8 +99,12 @@ function isMessage(value: unknown): value is Message {
     return false;
   }
 
-  return content.attachments === undefined
+  const attachmentsValid = content.attachments === undefined
     || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
+  const controlValid = content.control === undefined || isIntercomControlEnvelope(content.control);
+  const controlThreadingValid = content.control === undefined
+    || (message.replyTo === undefined && message.expectsReply !== true);
+  return attachmentsValid && controlValid && controlThreadingValid;
 }
 
 function isSessionInfo(value: unknown): value is SessionInfo {
@@ -699,6 +705,7 @@ export class IntercomClient extends EventEmitter {
       content: {
         text: options.text,
         attachments: options.attachments,
+        control: options.control,
       },
     };
 

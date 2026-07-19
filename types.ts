@@ -1,3 +1,5 @@
+import type { IntercomControlEnvelope } from "./control.ts";
+
 export interface SessionInfo {
   id: string;
   name?: string;
@@ -28,6 +30,7 @@ export interface Message {
   content: {
     text: string;
     attachments?: Attachment[];
+    control?: IntercomControlEnvelope;
   };
 }
 
