@@ -30,6 +30,8 @@ import {
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
+export const INTERCOM_INBOUND_ACTIVITY_EVENT = "agent-intercom:inbound-message";
+export const INTERCOM_LIFECYCLE_SEND_EVENT = "agent-intercom:lifecycle-send";
 const INBOUND_BATCH_QUIET_MS = 300;
 const INBOUND_BATCH_MAX_LATENCY_MS = 1000;
 const INBOUND_IDLE_RETRY_MS = 500;
@@ -996,6 +998,16 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     receivingClient.acknowledgeMessage(deliveryId);
     if (enqueued.duplicate) return;
     if (deliverRegisteredControl(enqueued.entry)) return;
+    pi.events.emit(INTERCOM_INBOUND_ACTIVITY_EVENT, {
+      from: { id: from.id, ...(from.name ? { name: from.name } : {}) },
+      message: {
+        id: message.id,
+        timestamp: message.timestamp,
+        ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+        ...(message.expectsReply ? { expectsReply: true } : {}),
+      },
+      receivedAt: enqueued.entry.receivedAt,
+    });
 
     const replyWaiter = message.replyTo ? replyWaiters.get(message.replyTo) : undefined;
     if (replyWaiter) {
@@ -1168,7 +1180,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     return await resolveSessionTarget(activeClient, metadata.orchestratorTarget) ?? metadata.orchestratorTarget;
   }
-  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): void {
+  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result" | "fleet-lifecycle", status: string, messageText: string): void {
     const liveContext = getLiveContext();
     const now = Date.now();
     sendIncomingBatch([{
@@ -1317,7 +1329,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   }
   function relaySubagentIntercomPayload(payload: unknown, options: {
-    sender: "subagent-control" | "subagent-result";
+    sender: "subagent-control" | "subagent-result" | "fleet-lifecycle";
     status: string;
     errorEntryType: string;
     acknowledge?: boolean;
@@ -1399,6 +1411,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       acknowledge: true,
     });
   });
+  const unsubscribeFleetLifecycleIntercom = pi.events.on(INTERCOM_LIFECYCLE_SEND_EVENT, (payload) => {
+    relaySubagentIntercomPayload(payload, {
+      sender: "fleet-lifecycle",
+      status: "needs_attention",
+      errorEntryType: "intercom_lifecycle_error",
+    });
+  });
   pi.on("session_start", (_event, ctx) => {
     if (!config.enabled) {
       return;
@@ -1411,6 +1430,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     unsubscribeControlSend();
     unsubscribeSubagentControlIntercom();
     unsubscribeSubagentResultIntercom();
+    unsubscribeFleetLifecycleIntercom();
     shuttingDown = true;
     disposed = true;
     runtimeGeneration += 1;
