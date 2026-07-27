@@ -74,10 +74,12 @@ const MAX_SESSION_NAME_LENGTH = 256;
 const MAX_SESSION_CWD_LENGTH = 4096;
 const MAX_SESSION_MODEL_LENGTH = 512;
 const MAX_SESSION_STATUS_LENGTH = 512;
+const MAX_RUNTIME_INSTANCE_ID_LENGTH = 256;
 
 interface ConnectedSession {
   socket: net.Socket;
   info: SessionInfo;
+  runtimeInstanceId?: string;
   lastPresenceBroadcastAt: number;
 }
 
@@ -246,9 +248,28 @@ function isSessionRegistration(value: unknown): value is SessionRegistration {
   if (session.name !== undefined && (typeof session.name !== "string" || session.name.length > MAX_SESSION_NAME_LENGTH)) {
     return false;
   }
+  if (
+    session.runtimeInstanceId !== undefined
+    && (
+      typeof session.runtimeInstanceId !== "string"
+      || session.runtimeInstanceId.length === 0
+      || session.runtimeInstanceId.length > MAX_RUNTIME_INSTANCE_ID_LENGTH
+    )
+  ) {
+    return false;
+  }
 
   return session.status === undefined
     || (typeof session.status === "string" && session.status.length <= MAX_SESSION_STATUS_LENGTH);
+}
+
+function isSameLocalRuntime(previous: ConnectedSession, registration: SessionRegistration): boolean {
+  if (previous.runtimeInstanceId !== undefined || registration.runtimeInstanceId !== undefined) {
+    return previous.runtimeInstanceId !== undefined
+      && previous.runtimeInstanceId === registration.runtimeInstanceId;
+  }
+  return previous.info.pid === registration.pid
+    && previous.info.startedAt === registration.startedAt;
 }
 
 class IntercomBroker {
@@ -636,6 +657,15 @@ class IntercomBroker {
             socket.destroy();
             break;
           }
+          if (previous && !isSameLocalRuntime(previous, clientMessage.session)) {
+            this.sendError(
+              socket,
+              "SESSION_ID_IN_USE",
+              `Session ID "${id}" is already active in another local runtime; close the existing session or use a different session ID`,
+            );
+            socket.end();
+            break;
+          }
           if (previous) {
             this.clearPendingDeliveriesForSession(id, previous.socket);
             this.deferAskEdgesForSession(id);
@@ -693,7 +723,14 @@ class IntercomBroker {
             generation: remotePrincipal.generation,
           });
         }
-        this.sessions.set(id, { socket, info, lastPresenceBroadcastAt: Date.now() });
+        this.sessions.set(id, {
+          socket,
+          info,
+          ...(!remotePrincipal && clientMessage.session.runtimeInstanceId
+            ? { runtimeInstanceId: clientMessage.session.runtimeInstanceId }
+            : {}),
+          lastPresenceBroadcastAt: Date.now(),
+        });
 
         if (this.shutdownTimer) {
           clearTimeout(this.shutdownTimer);
@@ -1012,9 +1049,10 @@ class IntercomBroker {
         ) {
           throw new Error("Invalid defer_ask message");
         }
+        const session = this.sessions.get(currentId);
         const edge = this.askEdges.get(this.askKey(currentId, clientMessage.messageId));
-        const applied = Boolean(edge?.from === currentId);
-        if (edge?.from === currentId && edge.state === "blocking") {
+        const applied = Boolean(session?.socket === socket && edge?.from === currentId);
+        if (applied && edge?.state === "blocking") {
           edge.state = "deferred";
           this.persistAskEdges();
           this.notifyAskDeferred(edge);

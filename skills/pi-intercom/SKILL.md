@@ -443,6 +443,10 @@ if (result.details?.pending) {
 2. Verify the target session has loaded pi-intercom
 3. Ensure both sessions are on the same machine (intercom is same-machine only)
 
+### Session name flips or registration reports `SESSION_ID_IN_USE`
+
+The same Pi session is open in more than one live runtime, such as a desktop terminal and a mobile/RPC host. Intercom keeps the first runtime authoritative instead of allowing the two clients to evict each other. Close or switch away from the duplicate runtime; one transcript/session ID must have only one live owner.
+
 ### Message not delivered
 
 ```typescript

@@ -687,6 +687,89 @@ test("broker accepts caller supplied stable IDs across reconnect", { concurrency
   }
 });
 
+test("broker rejects a different live runtime claiming an active stable ID", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  const owner = createAcknowledgingClient();
+  const contender = createAcknowledgingClient();
+
+  try {
+    await owner.connect({
+      name: "stable-owner",
+      cwd: repoDir,
+      model: "test-model",
+      pid: 101,
+      startedAt: 1001,
+      lastActivity: Date.now(),
+      runtimeInstanceId: "runtime-owner",
+    }, "contested-stable-session-id");
+
+    await assert.rejects(
+      contender.connect({
+        name: "stable-contender",
+        cwd: repoDir,
+        model: "test-model",
+        pid: 202,
+        startedAt: 2002,
+        lastActivity: Date.now(),
+        runtimeInstanceId: "runtime-contender",
+      }, "contested-stable-session-id"),
+      /already active in another local runtime/,
+    );
+
+    const registered = await waitForSessionId(planner, "contested-stable-session-id");
+    assert.equal(registered.name, "stable-owner");
+    assert.equal(registered.pid, 101);
+    assert.equal("runtimeInstanceId" in registered, false);
+
+    const received = once(owner, "message") as Promise<[SessionInfo, Message]>;
+    const sent = await planner.send("contested-stable-session-id", { text: "owner remains connected" });
+    assert.equal(sent.delivered, true);
+    const [, message] = await received;
+    assert.equal(message.content.text, "owner remains connected");
+  } finally {
+    await contender.disconnect().catch(() => undefined);
+    await owner.disconnect().catch(() => undefined);
+    await cleanup();
+  }
+});
+
+test("broker protects active stable IDs for legacy local clients without runtime instance IDs", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  const owner = createAcknowledgingClient();
+  const contender = createAcknowledgingClient();
+
+  try {
+    await owner.connect({
+      name: "legacy-stable-owner",
+      cwd: repoDir,
+      model: "test-model",
+      pid: 303,
+      startedAt: 3003,
+      lastActivity: Date.now(),
+    }, "legacy-contested-stable-session-id");
+
+    await assert.rejects(
+      contender.connect({
+        name: "legacy-stable-contender",
+        cwd: repoDir,
+        model: "test-model",
+        pid: 404,
+        startedAt: 4004,
+        lastActivity: Date.now(),
+      }, "legacy-contested-stable-session-id"),
+      /already active in another local runtime/,
+    );
+
+    const registered = await waitForSessionId(planner, "legacy-contested-stable-session-id");
+    assert.equal(registered.name, "legacy-stable-owner");
+    assert.equal(registered.pid, 303);
+  } finally {
+    await contender.disconnect().catch(() => undefined);
+    await owner.disconnect().catch(() => undefined);
+    await cleanup();
+  }
+});
+
 test("broker owns local trust metadata instead of trusting registration payloads", { concurrency: false }, async () => {
   const { planner, cleanup } = await setupClients();
   const raw = await connectRawRegistered("trust-metadata-worker-id", "trust-metadata-worker", {
@@ -885,7 +968,12 @@ test("broker coalesces no-op presence floods", { concurrency: false }, async () 
 
 test("old stable-ID socket cannot mutate the replacement session", { concurrency: false }, async () => {
   const { planner, cleanup } = await setupClients();
-  const first = await connectRawRegistered("replaceable-session-id", "replaceable-worker-old");
+  const runtimeStartedAt = Date.now();
+  const runtimeInstanceId = "replaceable-runtime";
+  const first = await connectRawRegistered("replaceable-session-id", "replaceable-worker-old", {
+    startedAt: runtimeStartedAt,
+    runtimeInstanceId,
+  });
   const replacement = createAcknowledgingClient();
 
   try {
@@ -894,8 +982,9 @@ test("old stable-ID socket cannot mutate the replacement session", { concurrency
       cwd: repoDir,
       model: "test-model",
       pid: process.pid,
-      startedAt: Date.now(),
+      startedAt: runtimeStartedAt,
       lastActivity: Date.now(),
+      runtimeInstanceId,
     }, "replaceable-session-id");
 
     first.writeMessage(first.socket, { type: "presence", name: "stale-name" });
@@ -916,9 +1005,14 @@ test("old stable-ID socket cannot mutate the replacement session", { concurrency
   }
 });
 
-test("stable-ID replacement defers old ask edges and ignores stale cancels", { concurrency: false }, async () => {
+test("stable-ID replacement defers old ask edges and ignores stale ask controls", { concurrency: false }, async () => {
   const { planner, orchestrator, cleanup } = await setupClients();
-  const first = await connectRawRegistered("replaceable-asker-id", "replaceable-asker-old");
+  const runtimeStartedAt = Date.now();
+  const runtimeInstanceId = "replaceable-asker-runtime";
+  const first = await connectRawRegistered("replaceable-asker-id", "replaceable-asker-old", {
+    startedAt: runtimeStartedAt,
+    runtimeInstanceId,
+  });
   const replacement = createAcknowledgingClient();
 
   try {
@@ -934,8 +1028,9 @@ test("stable-ID replacement defers old ask edges and ignores stale cancels", { c
       cwd: repoDir,
       model: "test-model",
       pid: process.pid,
-      startedAt: Date.now(),
+      startedAt: runtimeStartedAt,
       lastActivity: Date.now(),
+      runtimeInstanceId,
     }, "replaceable-asker-id");
 
     const reverseAfterReplace = await orchestrator.send("replaceable-asker-id", {
@@ -961,6 +1056,7 @@ test("stable-ID replacement defers old ask edges and ignores stale cancels", { c
       expectsReply: true,
     });
     assert.equal(replacementAsk.delivered, true);
+    first.writeMessage(first.socket, { type: "defer_ask", requestId: "stale-defer", messageId: "replacement-ask-edge" });
     first.writeMessage(first.socket, { type: "cancel_ask", requestId: "stale-cancel", messageId: "replacement-ask-edge" });
     await new Promise((resolve) => setTimeout(resolve, 50));
 

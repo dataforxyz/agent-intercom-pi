@@ -594,6 +594,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let currentSessionId: string | null = null;
   let currentModel = "unknown";
   let sessionStartedAt: number | null = null;
+  let runtimeInstanceId: string | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let namePollTimer: NodeJS.Timeout | null = null;
   let lastPresenceName: string | null = null;
@@ -748,6 +749,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       startedAt: sessionStartedAt,
       lastActivity: Date.now(),
       status: currentStatus(),
+      ...(runtimeInstanceId ? { runtimeInstanceId } : {}),
     };
   }
   function syncPresenceIdentity(sessionId: string): void {
@@ -1244,6 +1246,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     publishIntercomSessionId(currentSessionId);
     currentModel = ctx.model?.id ?? "unknown";
     sessionStartedAt = Date.now();
+    runtimeInstanceId = randomUUID();
     lastPresenceName = buildPresenceIdentity(pi, currentSessionId).name;
     agentRunning = false;
     activeTools.clear();
@@ -1454,6 +1457,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     runtimeContext = null;
     currentSessionId = null;
     sessionStartedAt = null;
+    runtimeInstanceId = null;
   });
   pi.on("turn_end", () => {
     if (!getLiveContext()) {
