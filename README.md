@@ -285,7 +285,7 @@ To reply, use the intercom tool: intercom_reply({ message: "..." })
 Only GET/PUT/DELETE — never POST. Max 3 retries with exponential backoff starting at 100ms.
 ```
 
-This matters because the agent receiving the message never needs to see or reconstruct protocol thread IDs. Combined with idle-gated `triggerTurn` delivery, it enables real back-and-forth conversation without interrupting work in progress. If the reply happens later instead of in the triggered turn, `intercom_reply({ message: "..." })` falls back to the single unresolved inbound ask, and `intercom_pending({})` shows who is still waiting.
+This matters because the agent receiving the message never needs to see or reconstruct protocol thread IDs. Combined with idle-gated `triggerTurn` delivery, it enables real back-and-forth conversation without interrupting work in progress. If the reply happens later instead of in the triggered turn, `intercom_reply({ message: "..." })` falls back to the single unresolved inbound ask, and `intercom_pending({})` shows who is still waiting with stable receiver-local ask IDs.
 
 ### `send` vs `ask`
 
@@ -293,7 +293,7 @@ This matters because the agent receiving the message never needs to see or recon
 
 `intercom_ask` sends a genuinely blocking question and waits up to 30 seconds for the recipient. A prompt reply comes back as the tool result, so the agent continues in the same turn with full context. If nobody replies within 30 seconds, the tool returns control without an error and keeps the request open asynchronously; a late reply arrives as a new intercom message. Different recipients may be asked concurrently, but only one unresolved ask per recipient is allowed. Use `intercom_send` for assignments, progress/status checkpoints, notifications, and follow-ups.
 
-`intercom_reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom_reply({ message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use `intercom_pending({})`, select the sender with `to`, and use `which: "oldest"` or `which: "latest"` when that sender has more than one unresolved ask.
+`intercom_reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom_reply({ message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use the stable ID from `intercom_pending({})` with `intercom_reply({ askId, message: "..." })`; the older `to` plus `which` selectors remain supported.
 
 The planner typically uses `send`. If you prefer manual approval for outgoing non-reply messages, turn on `confirmSend: true`. Workers should also use `send` for progress and completion, reserving `ask` for decisions they cannot safely continue without.
 
@@ -397,13 +397,13 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 |------|------------|-------------|
 | `intercom_send` | required `to`, required `message`, optional `attachments` | Fire-and-forget delivery |
 | `intercom_ask` | required `to`, required `message`, optional `attachments` | Ask and wait briefly for a reply |
-| `intercom_reply` | required `message`, optional `to`, `which` | Reply to the active or pending inbound message; `to` selects a sender and `which` selects that sender's oldest/latest unresolved ask |
+| `intercom_reply` | required `message`, optional `askId`, `to`, `which` | Reply to the active or pending inbound message; `askId` selects an exact unresolved ask, while `to`/`which` remain compatible selectors |
 | `intercom_team` | none | Show the current manager and live coworkers owned by that manager |
 | `intercom_list` | none | List connected sessions globally |
-| `intercom_pending` | none | List unresolved inbound asks |
+| `intercom_pending` | optional `askId`, `session` | List unresolved inbound asks with stable IDs; `askId` retrieves the full untruncated body, and managers may use `session` for an owned coworker |
 | `intercom_status` | none | Show connection and queue status |
 
-Exact reply threading is internal. No split tool exposes `replyTo`, `reply_to`, or any message/thread-ID parameter.
+Exact protocol threading is internal. Stable `askId` values are receiver-local selectors, not wire message/thread IDs; no split tool exposes `replyTo` or `reply_to`.
 
 ### contact_supervisor
 
@@ -431,11 +431,11 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`intercom_ask`** waits up to 30 seconds for a prompt reply, then returns a successful pending result while keeping the request open for a late reply. Different recipients may wait concurrently; the same recipient may have only one unresolved ask. `PI_INTERCOM_ASK_WAIT_MS` changes the blocking window.
 
-**`intercom_reply`** resolves the active or pending inbound context internally. Pass optional `to` to select a sender and `which: "oldest" | "latest"` when that sender has multiple unresolved asks. Neither field is a thread or message ID. `intercom_pending` labels same-sender asks as oldest/latest without exposing protocol IDs.
+**`intercom_reply`** resolves the active or pending inbound context internally. Pass the stable `askId` returned by `intercom_pending` to select one exact ask. Optional `to` and `which: "oldest" | "latest"` remain available for compatibility. None of these values exposes the protocol thread ID.
 
 The broker refuses a second unresolved `intercom_ask` from one session to the same recipient. Wait for the first answer or use `intercom_send` for a non-blocking follow-up.
 
-**`intercom_pending`** lists unresolved inbound asks waiting for this session's reply, with sender, elapsed time, and a preview. It does not list outbound asks sent to coworkers.
+**`intercom_pending`** lists unresolved inbound asks waiting for this session's reply, with a stable ask ID, sender, elapsed time, and the existing 80-character preview. Pass `askId` to retrieve that ask's full untruncated body and attachments. A manager may also pass an exact connected stable `session` for an owned local coworker returned by `intercom_team`; names, prefixes, offline targets, workers, remote peers, and unrelated sessions fail closed. It does not list outbound asks sent to coworkers.
 
 **`intercom_status`** shows connection, session, queue, and pending-ask status.
 

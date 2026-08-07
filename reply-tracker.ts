@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { getAskTimeoutMs } from "./config.ts";
 import type { Message, SessionInfo } from "./types.ts";
 
@@ -9,6 +10,16 @@ export interface IntercomContext {
 }
 
 export type ReplyWhich = "oldest" | "latest";
+
+/** Stable, receiver-local selector that does not expose the wire message ID. */
+export function pendingAskId(fromSessionId: string, messageId: string): string {
+  const digest = createHash("sha256")
+    .update(fromSessionId)
+    .update("\0")
+    .update(messageId)
+    .digest("base64url");
+  return `ask-${digest}`;
+}
 
 function matchesPendingSender(context: IntercomContext, to: string): boolean {
   if (context.from.id === to) {
@@ -78,8 +89,21 @@ export class ReplyTracker {
     this.currentTurnContexts = [];
   }
 
-  resolveReplyTarget(options: { to?: string; replyTo?: string; which?: ReplyWhich }, now = Date.now()): IntercomContext {
+  resolveReplyTarget(options: { to?: string; replyTo?: string; askId?: string; which?: ReplyWhich }, now = Date.now()): IntercomContext {
     this.pruneExpired(now);
+
+    if (options.askId) {
+      const match = Array.from(this.pendingAsks.values()).find((context) =>
+        pendingAskId(context.from.id, context.message.id) === options.askId
+      );
+      if (!match) {
+        throw new Error(`No pending ask with ask ID "${options.askId}"`);
+      }
+      if (options.to && !matchesPendingSender(match, options.to)) {
+        throw new Error(`Pending ask "${options.askId}" is not from "${options.to}"`);
+      }
+      return match;
+    }
 
     if (options.replyTo) {
       const candidates = Array.from(this.pendingAsks.values()).filter((context) => context.message.id === options.replyTo);

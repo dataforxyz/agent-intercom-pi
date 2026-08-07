@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_ASK_WAIT_MS, getAskTimeoutMs, getAskWaitMs } from "./config.ts";
-import { ReplyTracker } from "./reply-tracker.ts";
+import { pendingAskId, ReplyTracker } from "./reply-tracker.ts";
 import type { Message, SessionInfo } from "./types.ts";
 
 function createSession(id: string, name: string): SessionInfo {
@@ -96,6 +96,19 @@ test("replyTo resolves the exact pending ask", () => {
 
   assert.equal(tracker.resolveReplyTarget({ replyTo: "ask-2" }, 1002).from.id, "reviewer-id");
   assert.throws(() => tracker.resolveReplyTarget({ to: "planner", replyTo: "ask-2" }, 1002), /is not from/);
+});
+
+test("stable ask IDs select an exact pending ask without exposing the wire ID", () => {
+  const tracker = new ReplyTracker();
+  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("wire-ask-1", "First"), 1000);
+  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("wire-ask-2", "Second"), 1001);
+
+  const id = pendingAskId("planner-id", "wire-ask-2");
+  assert.match(id, /^ask-[A-Za-z0-9_-]{43}$/);
+  assert.equal(id, pendingAskId("planner-id", "wire-ask-2"));
+  assert.doesNotMatch(id, /wire-ask-2/);
+  assert.equal(tracker.resolveReplyTarget({ askId: id }, 1002).message.id, "wire-ask-2");
+  assert.throws(() => tracker.resolveReplyTarget({ askId: `${id}-missing` }, 1002), /No pending ask with ask ID/);
 });
 
 test("same message ID from different senders remains independently addressable", () => {

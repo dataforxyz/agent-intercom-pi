@@ -14,7 +14,7 @@ import { formatMessageTiming } from "./ui/timestamps.ts";
 import { formatSessionDisplayName, sanitizeDisplayText, sessionOriginLabel, shortestUniqueIdPrefixes } from "./ui/session-identity.ts";
 import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, SessionRegistration, Message, Attachment } from "./types.ts";
-import { ReplyTracker } from "./reply-tracker.ts";
+import { pendingAskId, ReplyTracker, type IntercomContext } from "./reply-tracker.ts";
 import { InboundMessageConflictError, PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
 import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
 import { formatIntercomTeam, resolveBossIntercomTeam, resolveIntercomTeam } from "./team.ts";
@@ -1236,6 +1236,45 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     return await resolveSessionTarget(activeClient, target) ?? target;
   }
+  async function resolveCurrentIntercomTeam(activeClient: IntercomClient) {
+    const sessions = await activeClient.listSessions();
+    const team = bossTeamScope.restricted
+      ? resolveBossIntercomTeam({ selfId: activeClient.sessionId, sessions, scope: bossTeamScope })
+      : await resolveIntercomTeam({ selfId: activeClient.sessionId, sessions });
+    return { sessions, team };
+  }
+  async function loadPendingAskContexts(activeClient: IntercomClient, requestedSession?: string): Promise<{
+    inboxSessionId: string;
+    contexts: IntercomContext[];
+  }> {
+    if (!requestedSession || requestedSession === activeClient.sessionId) {
+      inboundInbox?.prunePendingAsks(getAskTimeoutMs());
+      return { inboxSessionId: activeClient.sessionId, contexts: replyTracker.listPending() };
+    }
+
+    const { sessions, team } = await resolveCurrentIntercomTeam(activeClient);
+    if (!team.self.isManager) {
+      throw new Error("Only a manager may inspect another session's pending-ask inbox");
+    }
+    const member = team.coworkers.find((entry) => entry.id === requestedSession || entry.target === requestedSession);
+    if (!member) {
+      throw new Error(`Pending-ask inbox access denied for "${requestedSession}"; select an owned coworker returned by intercom_team`);
+    }
+    const liveSession = sessions.find((session) => session.id === member.target);
+    if (!liveSession) {
+      throw new Error(`Pending-ask inbox access denied for "${requestedSession}"; the owned coworker must have an exact connected stable session ID`);
+    }
+    if (liveSession.origin === "remote") {
+      throw new Error(`Pending-ask inbox "${requestedSession}" is remote and cannot be read from this host`);
+    }
+    const inboxSessionId = liveSession.id;
+    const cutoff = Date.now() - getAskTimeoutMs();
+    const contexts = new PersistentInboundInbox(inboxSessionId)
+      .listPendingAsks()
+      .filter((entry) => entry.receivedAt >= cutoff)
+      .map(({ from, message, receivedAt }) => ({ from, message, receivedAt }));
+    return { inboxSessionId, contexts };
+  }
   async function resolveSupervisorTarget(activeClient: IntercomClient, metadata: ChildOrchestratorMetadata): Promise<string> {
     if (metadata.orchestratorSessionId) {
       const bySessionId = await resolveSessionTarget(activeClient, metadata.orchestratorSessionId);
@@ -1969,7 +2008,8 @@ Usage:
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask, waiting up to 30 seconds before continuing asynchronously
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
-  intercom({ action: "pending" })                                      → List unresolved inbound asks
+  intercom({ action: "pending" })                                    → List unresolved inbound asks with stable IDs
+  intercom({ action: "pending", askId: "ask-..." })                  → Retrieve one untruncated ask body
   intercom({ action: "status" })                  → Show connection status`,
     promptSnippet:
       "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
@@ -1992,6 +2032,12 @@ Usage:
       }))),
       replyTo: Type.Optional(Type.String({
         description: "Message ID to reply to (legacy threading only)",
+      })),
+      askId: Type.Optional(Type.String({
+        description: "Stable ask selector returned by the pending action (for 'reply' or full-body pending retrieval)",
+      })),
+      session: Type.Optional(Type.String({
+        description: "Owned coworker session whose pending inbox a manager wants to inspect (for 'pending' only)",
       })),
       which: Type.Optional(StringEnum(["oldest", "latest"] as const, {
         description: "Select the oldest or latest unresolved ask when one sender has multiple pending asks",
@@ -2021,7 +2067,7 @@ Usage:
         }
       }
 
-      const { action, to, message, attachments, replyTo, which } = params;
+      const { action, to, message, attachments, replyTo, askId, session, which } = params;
 
       switch (action) {
         case "list": {
@@ -2254,7 +2300,7 @@ Usage:
               if ("code" in requested) throw new BossTeamScopeError(requested.code, requested.error);
               exactReplyTarget = requested.targetId;
             }
-            const target = replyTracker.resolveReplyTarget({ to: exactReplyTarget, replyTo, which });
+            const target = replyTracker.resolveReplyTarget({ to: exactReplyTarget, replyTo, askId, which });
             if (bossTeamScope.present) {
               const resolution = resolveBossLiveTarget(bossTeamScope, target.from.id, await connectedClient.listSessions(), connectedClient.sessionId);
               if ("code" in resolution) throw new BossTeamScopeError(resolution.code, resolution.error);
@@ -2304,17 +2350,31 @@ Usage:
         }
 
         case "pending": {
-          inboundInbox?.prunePendingAsks(getAskTimeoutMs());
-          const pendingAsks = replyTracker.listPending();
+          let inboxSessionId: string;
+          let pendingAsks: IntercomContext[];
+          try {
+            ({ inboxSessionId, contexts: pendingAsks } = await loadPendingAskContexts(connectedClient, session));
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `Failed to inspect pending asks: ${getErrorMessage(error)}` }],
+              details: toolErrorDetails(error),
+            };
+          }
           if (pendingAsks.length === 0) {
+            if (askId) {
+              return {
+                content: [{ type: "text", text: `No unresolved pending ask with ask ID "${askId}" in inbox "${inboxSessionId}".` }],
+                details: { error: true, inboxSessionId },
+              };
+            }
             return {
               content: [{ type: "text", text: "No unresolved inbound asks. Outbound asks are not listed here." }],
-              details: {},
+              details: { inboxSessionId, asks: [] },
             };
           }
 
           const now = Date.now();
-          const lines = pendingAsks.map(({ from, message, receivedAt, deferredAt }) => {
+          const asks = pendingAsks.map(({ from, message, receivedAt, deferredAt }) => {
             const sameSender = pendingAsks.filter((entry) => entry.from.id === from.id);
             const senderIndex = sameSender.findIndex((entry) => entry.message.id === message.id);
             const selector = sameSender.length <= 1
@@ -2326,12 +2386,64 @@ Usage:
                   : " · queued";
             const preview = message.content.text.replace(/\s+/g, " ").slice(0, 80);
             const elapsedSeconds = Math.max(0, Math.floor((now - receivedAt) / 1000));
-            const state = deferredAt ? " · async" : "";
-            return `- ${bossTeamScope.present ? from.id : from.name || from.id}${selector} · ${elapsedSeconds}s ago${state} · ${preview}`;
+            return {
+              id: pendingAskId(from.id, message.id),
+              from,
+              receivedAt,
+              ...(deferredAt ? { deferredAt } : {}),
+              preview,
+              selector,
+              elapsedSeconds,
+              message,
+            };
+          });
+
+          if (askId) {
+            const ask = asks.find((entry) => entry.id === askId);
+            if (!ask) {
+              return {
+                content: [{ type: "text", text: `No unresolved pending ask with ask ID "${askId}" in inbox "${inboxSessionId}".` }],
+                details: { error: true, inboxSessionId },
+              };
+            }
+            const attachmentText = ask.message.content.attachments?.length
+              ? formatAttachments(ask.message.content.attachments)
+              : "";
+            const sender = bossTeamScope.present ? ask.from.id : ask.from.name || ask.from.id;
+            return {
+              content: [{ type: "text", text: `**Pending ask ${ask.id}**\nInbox: ${inboxSessionId}\nFrom: ${sender}\n\n${ask.message.content.text}${attachmentText}` }],
+              details: {
+                inboxSessionId,
+                ask: {
+                  id: ask.id,
+                  from: ask.from,
+                  receivedAt: ask.receivedAt,
+                  ...(ask.deferredAt ? { deferredAt: ask.deferredAt } : {}),
+                  preview: ask.preview,
+                  body: ask.message.content.text,
+                  attachments: ask.message.content.attachments ?? [],
+                },
+              },
+            };
+          }
+
+          const lines = asks.map((ask) => {
+            const state = ask.deferredAt ? " · async" : "";
+            const sender = bossTeamScope.present ? ask.from.id : ask.from.name || ask.from.id;
+            return `- ${ask.id} · ${sender}${ask.selector} · ${ask.elapsedSeconds}s ago${state} · ${ask.preview}`;
           });
           return {
             content: [{ type: "text", text: `**Pending asks:**\n${lines.join("\n")}` }],
-            details: {},
+            details: {
+              inboxSessionId,
+              asks: asks.map((ask) => ({
+                id: ask.id,
+                from: ask.from,
+                receivedAt: ask.receivedAt,
+                ...(ask.deferredAt ? { deferredAt: ask.deferredAt } : {}),
+                preview: ask.preview,
+              })),
+            },
           };
         }
 
@@ -2454,11 +2566,12 @@ Usage:
     label: "Intercom Reply",
     description: "Reply to an inbound intercom message or ask. Exact protocol threading is resolved internally.",
     promptSnippet: "Reply to the active or pending inbound intercom message.",
-    promptGuidelines: ["Use intercom_reply to answer an inbound intercom message. Use `to` to select a sender and `which` as `oldest` or `latest` when that sender has multiple pending asks. Neither field is a message or thread ID."],
+    promptGuidelines: ["Use intercom_reply to answer an inbound intercom message. Prefer the stable `askId` returned by intercom_pending when selecting an exact ask; `to` plus `which` remains available for compatibility."],
     parameters: Type.Object({
       message: Type.String({ description: "Required reply text" }),
       to: Type.Optional(Type.String({ description: "Optional sender/session selector when multiple senders or asks are pending; never a message or thread ID" })),
       which: Type.Optional(StringEnum(["oldest", "latest"] as const, { description: "Select the oldest or latest ask when the chosen sender has multiple unresolved asks" })),
+      askId: Type.Optional(Type.String({ description: "Stable ask selector returned by intercom_pending" })),
     }),
     execute: executeSplitAction("reply"),
     renderCall: renderSplitCall("reply"),
@@ -2502,7 +2615,7 @@ Usage:
 
   for (const definition of [
     { name: "intercom_list", label: "Intercom List", action: "list", description: "List active local intercom sessions.", promptSnippet: "List active local intercom sessions." },
-    { name: "intercom_pending", label: "Intercom Pending", action: "pending", description: "List unresolved inbound intercom asks. This does not list questions you sent to other sessions.", promptSnippet: "List unresolved inbound asks waiting for your reply." },
+    { name: "intercom_pending", label: "Intercom Pending", action: "pending", description: "List unresolved inbound intercom asks with stable IDs, or retrieve one ask's full body. Managers may inspect an owned coworker's inbox. This does not list questions you sent to other sessions.", promptSnippet: "List unresolved inbound asks or retrieve one full ask by its stable ID." },
     { name: "intercom_status", label: "Intercom Status", action: "status", description: "Show this session's intercom connection status.", promptSnippet: "Show intercom connection status." },
   ] as const) {
     if (definition.name === "intercom_list" && bossTeamScope.restricted) continue;
@@ -2511,7 +2624,12 @@ Usage:
       label: definition.label,
       description: definition.description,
       promptSnippet: definition.promptSnippet,
-      parameters: Type.Object({}),
+      parameters: definition.name === "intercom_pending"
+        ? Type.Object({
+            askId: Type.Optional(Type.String({ description: "Stable ask ID to retrieve with its untruncated body" })),
+            session: Type.Optional(Type.String({ description: "Owned coworker session ID; available only to that coworker's manager" })),
+          })
+        : Type.Object({}),
       execute: executeSplitAction(definition.action),
       renderCall: renderSplitCall(definition.action),
       renderResult: renderSplitResult,

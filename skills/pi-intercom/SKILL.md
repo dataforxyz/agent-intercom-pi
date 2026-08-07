@@ -108,10 +108,11 @@ intercom_reply({
 
 // If replying later and there might be more than one pending ask:
 intercom_pending({})
-intercom_reply({ to: "planner", which: "oldest", message: "Use exponential backoff starting at 100ms." })
+intercom_pending({ askId: "ask-..." }) // Retrieve the full untruncated body when needed
+intercom_reply({ askId: "ask-...", message: "Use exponential backoff starting at 100ms." })
 ```
 
-`intercom_reply` preserves exact threading internally. `intercom_pending` labels same-sender asks as `oldest`/`latest`; models never see or construct the protocol message ID.
+`intercom_reply` preserves exact threading internally. `intercom_pending` returns stable receiver-local ask IDs and short previews; models never see or construct the protocol message ID. Managers can pass `session` with an owned coworker target from `intercom_team` to inspect that coworker's pending inbox.
 
 ### Pattern 5: Broadcast to Multiple Workers
 
@@ -202,9 +203,9 @@ intercom_reply({
 
 ```typescript
 intercom_pending({})
-// → Shows all unresolved inbound asks with sender, elapsed time, and preview
+// → Shows all unresolved inbound asks with stable ask ID, sender, elapsed time, and preview
 
-intercom_reply({ to: "subagent-worker-78f659a3-1", message: "Use the v2 API." })
+intercom_reply({ askId: "ask-...", message: "Use the v2 API." })
 ```
 
 **Important:** Only sessions where `pi-subagents` supplied child bridge metadata

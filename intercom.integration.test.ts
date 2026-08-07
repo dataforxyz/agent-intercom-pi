@@ -5,7 +5,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter, once } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { ReplyTracker } from "./reply-tracker.ts";
+import { pendingAskId, ReplyTracker } from "./reply-tracker.ts";
 import { PersistentInboundInbox } from "./inbound-inbox.ts";
 import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
 import { ORCHESTRATOR_READINESS_ACK, ORCHESTRATOR_READINESS_PROBE } from "./boss-team-scope.ts";
@@ -123,6 +123,10 @@ test("persistent inbound inbox retains replyable asks after message consumption"
 
     const reloaded = new PersistentInboundInbox("stable-receiver", runtimeDir);
     assert.deepEqual(reloaded.listPendingAsks().map((entry) => entry.message.id), ["persistent-ask"]);
+    const beforeReloadId = pendingAskId(enqueued.entry.from.id, enqueued.entry.message.id);
+    const afterReload = reloaded.listPendingAsks()[0]!;
+    assert.equal(pendingAskId(afterReload.from.id, afterReload.message.id), beforeReloadId);
+    assert.doesNotMatch(beforeReloadId, /persistent-ask|planner-id/);
     reloaded.dismissPendingAsk("persistent-ask", "planner-id");
 
     const answered = new PersistentInboundInbox("stable-receiver", runtimeDir);
@@ -1329,6 +1333,8 @@ test("split intercom tools are the default model-facing schema", { concurrency: 
     assert.deepEqual((schemas.intercom_ask as { required?: string[] }).required, ["to", "message"]);
     assert.deepEqual((schemas.intercom_reply as { required?: string[] }).required, ["message"]);
     assert.ok((schemas.intercom_reply as { properties?: Record<string, unknown> }).properties?.which);
+    assert.ok((schemas.intercom_reply as { properties?: Record<string, unknown> }).properties?.askId);
+    assert.deepEqual(Object.keys((schemas.intercom_pending as { properties?: Record<string, unknown> }).properties ?? {}).sort(), ["askId", "session"]);
     assert.doesNotMatch(JSON.stringify(schemas), /replyTo|reply_to/);
     assert.equal(harness.tools.some((tool) => tool.name === "intercom"), false);
   } finally {
@@ -1420,6 +1426,9 @@ test("Boss worker scope gates discovery and every model-facing send path by exac
       const pendingTool = harness.tools.find((tool) => tool.name === "intercom_pending")!;
       const pendingAfterRecovery = await pendingTool.execute("pending-after-recovery", {}, new AbortController().signal, undefined, harness.ctx);
       assert.match(pendingAfterRecovery.content[0]?.text ?? "", /No unresolved inbound asks/);
+      const deniedManagerInbox = await pendingTool.execute("pending-manager-inbox-denied", { session: managerId }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedManagerInbox.details?.error, true);
+      assert.match(deniedManagerInbox.content[0]?.text ?? "", /Only a manager/);
       const teamTool = harness.tools.find((tool) => tool.name === "intercom_team")!;
       const firstTeam = await teamTool.execute("team-before-late", {}, new AbortController().signal, undefined, harness.ctx);
       const firstText = firstTeam.content[0]?.text ?? "";
@@ -1655,11 +1664,35 @@ test("canonical Boss metadata with a mismatched connected self ID becomes deny-a
 test("Boss manager may contact the Controller while unrelated local sessions stay hidden", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const { planner, orchestrator, cleanup } = await setupClients();
+  const bossWorker = createAcknowledgingClient();
   let harness: ReturnType<typeof createExtensionHarness> | undefined;
   try {
     const suffix = "222222222222";
     const managerId = `boss-manager-${suffix}`;
+    const workerId = `boss-worker-${suffix}`;
     const controllerId = orchestrator.sessionId!;
+    await bossWorker.connect({
+      name: "boss-worker",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    }, workerId);
+    new PersistentInboundInbox(workerId).enqueue({
+      id: managerId,
+      name: "boss-manager",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    }, {
+      id: "manager-scoped-worker-ask",
+      timestamp: Date.now(),
+      expectsReply: true,
+      content: { text: `Worker-only full body ${"detail ".repeat(20)}DONE` },
+    });
     await withBossEnv(canonicalBossEnv(suffix, "manager", controllerId), async () => {
       harness = createExtensionHarness("boss-manager", { sessionId: managerId });
       piIntercomExtension(harness.pi as never);
@@ -1685,9 +1718,31 @@ test("Boss manager may contact the Controller while unrelated local sessions sta
       const team = await teamTool.execute("manager-team", {}, new AbortController().signal, undefined, harness.ctx);
       assert.match(team.content[0]?.text ?? "", new RegExp(`Controller: ${controllerId}`));
       assert.doesNotMatch(team.content[0]?.text ?? "", new RegExp(planner.sessionId!));
+
+      const pendingTool = harness.tools.find((tool) => tool.name === "intercom_pending")!;
+      const workerPending = await pendingTool.execute("manager-worker-pending", { session: workerId }, new AbortController().signal, undefined, harness.ctx);
+      const workerAskId = (workerPending.details as any).asks[0]?.id as string;
+      assert.match(workerPending.content[0]?.text ?? "", new RegExp(workerAskId));
+      assert.doesNotMatch(workerPending.content[0]?.text ?? "", /DONE/);
+      const workerFullBody = await pendingTool.execute("manager-worker-pending-body", { session: workerId, askId: workerAskId }, new AbortController().signal, undefined, harness.ctx);
+      assert.match(workerFullBody.content[0]?.text ?? "", /DONE$/);
+
+      const deniedControllerInbox = await pendingTool.execute("manager-controller-pending", { session: controllerId }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedControllerInbox.details?.error, true);
+      assert.match(deniedControllerInbox.content[0]?.text ?? "", /access denied/);
+      const deniedWorkerName = await pendingTool.execute("manager-worker-name-pending", { session: "boss-worker" }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedWorkerName.details?.error, true);
+      assert.match(deniedWorkerName.content[0]?.text ?? "", /access denied/);
+
+      await bossWorker.disconnect();
+      await waitForNoSessionId(orchestrator, workerId);
+      const deniedOfflineWorker = await pendingTool.execute("manager-offline-worker-pending", { session: workerId }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(deniedOfflineWorker.details?.error, true);
+      assert.match(deniedOfflineWorker.content[0]?.text ?? "", /access denied/);
     });
   } finally {
     if (harness) await harness.emitLifecycle("session_shutdown");
+    await bossWorker.disconnect().catch(() => undefined);
     await cleanup();
   }
 });
@@ -3679,6 +3734,50 @@ test("full ask/reply round-trip works with reply target resolved from current tu
     assert.equal(reply.message.replyTo, askId);
     assert.deepEqual(replyTracker.listPending(Date.now()), []);
   } finally {
+    await cleanup();
+  }
+});
+
+test("pending asks expose stable previews and support untruncated retrieval and reply by ask ID", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("pending-body-worker");
+  const longBody = `Choose the release strategy.\n\n${"full-body-marker ".repeat(12)}END`;
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const worker = await waitForSessionByName(planner, "pending-body-worker");
+    assert.equal((await planner.send(worker.id, {
+      messageId: "pending-long-body-wire-id",
+      text: longBody,
+      expectsReply: true,
+    })).delivered, true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const pendingTool = harness.tools.find((tool) => tool.name === "intercom_pending")!;
+    const listed = await pendingTool.execute("pending-list", {}, new AbortController().signal, undefined, harness.ctx);
+    const listedDetails = listed.details as { asks: Array<{ id: string; preview: string }> };
+    assert.equal(listedDetails.asks.length, 1);
+    assert.equal(listedDetails.asks[0]!.preview.length, 80);
+    assert.match(listed.content[0]?.text ?? "", new RegExp(listedDetails.asks[0]!.id));
+    assert.doesNotMatch(listed.content[0]?.text ?? "", /END/);
+    assert.doesNotMatch(JSON.stringify(listed), /pending-long-body-wire-id/);
+
+    const askId = listedDetails.asks[0]!.id;
+    const retrieved = await pendingTool.execute("pending-get", { askId }, new AbortController().signal, undefined, harness.ctx);
+    assert.match(retrieved.content[0]?.text ?? "", /full-body-marker/);
+    assert.match(retrieved.content[0]?.text ?? "", /END$/);
+    assert.equal((retrieved.details as any).ask.body, longBody);
+    assert.doesNotMatch(JSON.stringify(retrieved), /pending-long-body-wire-id/);
+
+    const replyReceived = waitForReply(planner, "pending-long-body-wire-id");
+    const replyTool = harness.tools.find((tool) => tool.name === "intercom_reply")!;
+    const replyResult = await replyTool.execute("pending-reply", { askId, message: "Use the staged release." }, new AbortController().signal, undefined, harness.ctx);
+    assert.equal(replyResult.details?.delivered, true);
+    assert.equal((await replyReceived).message.content.text, "Use the staged release.");
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
     await cleanup();
   }
 });
