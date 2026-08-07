@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { formatIntercomTeam, resolveIntercomTeam } from "./team.ts";
+import { formatIntercomTeam, resolveIntercomTeam, resolveManagedInboxSession } from "./team.ts";
 
 const worker = (id: string, runId: string, managerSessionId: string, state = "running") => ({ id, runId, harness: "pi", role: "reviewer", state, owned: true, managerSessionId, intercomTarget: id });
 
@@ -32,4 +32,37 @@ test("ordinary manager formatting does not invent Boss Controller metadata", () 
     coworkers: [],
   });
   assert.doesNotMatch(text, /Controller/);
+});
+
+test("ordinary orchestrator manager inbox access requires exact owned target and exact connected local ID", () => {
+  const managerTeam = {
+    self: { id: "manager-session", isManager: true },
+    manager: { target: "manager-session", connected: true },
+    coworkers: [{ id: "worker-record-alias", target: "worker-session", connected: true }],
+  };
+  const sessions = [
+    { id: "worker-session", name: "worker-name", origin: "local" as const },
+    { id: "other-team-session", name: "worker-session", origin: "local" as const },
+  ];
+
+  assert.equal(resolveManagedInboxSession({ team: managerTeam, sessions, requestedSession: "worker-session" }).id, "worker-session");
+  for (const requestedSession of ["worker-record-alias", "worker-name", "worker", "other-team-session"]) {
+    assert.throws(
+      () => resolveManagedInboxSession({ team: managerTeam, sessions, requestedSession }),
+      /access denied/,
+      requestedSession,
+    );
+  }
+  assert.throws(
+    () => resolveManagedInboxSession({ team: managerTeam, sessions: [], requestedSession: "worker-session" }),
+    /access denied/,
+  );
+  assert.throws(
+    () => resolveManagedInboxSession({ team: managerTeam, sessions: [{ id: "worker-session", origin: "remote" }], requestedSession: "worker-session" }),
+    /remote/,
+  );
+  assert.throws(
+    () => resolveManagedInboxSession({ team: { ...managerTeam, self: { id: "worker-session", isManager: false } }, sessions, requestedSession: "worker-session" }),
+    /Only a manager/,
+  );
 });

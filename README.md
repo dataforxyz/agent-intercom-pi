@@ -435,7 +435,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 The broker refuses a second unresolved `intercom_ask` from one session to the same recipient. Wait for the first answer or use `intercom_send` for a non-blocking follow-up.
 
-**`intercom_pending`** lists unresolved inbound asks waiting for this session's reply, with a stable ask ID, sender, elapsed time, and the existing 80-character preview. Pass `askId` to retrieve that ask's full untruncated body and attachments. A manager may also pass an exact connected stable `session` for an owned local coworker returned by `intercom_team`; names, prefixes, offline targets, workers, remote peers, and unrelated sessions fail closed. It does not list outbound asks sent to coworkers.
+**`intercom_pending`** lists unresolved inbound asks waiting for this session's reply, with a stable ask ID, sender, elapsed time, and the existing 80-character preview. Pass `askId` to retrieve that ask's full untruncated body and attachments. A manager may also pass an exact connected stable `session` matching an owned local coworker's `target` from `intercom_team`; worker-record IDs, names, prefixes, offline targets, workers, remote peers, and unrelated sessions fail closed. Foreign inbox inspection is read-only and refuses version skew or corruption without migrating, rewriting, or quarantining the target file. It does not list outbound asks sent to coworkers.
 
 **`intercom_status`** shows connection, session, queue, and pending-ask status.
 

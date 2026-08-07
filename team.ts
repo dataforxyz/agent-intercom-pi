@@ -6,6 +6,7 @@ import { bossSelfSessionError, resolveBossLiveSession, type BossTeamScope } from
 export interface TeamSession {
   id: string;
   name?: string;
+  origin?: "local" | "remote";
 }
 
 interface StoredWorker {
@@ -34,6 +35,29 @@ export interface IntercomTeam {
   manager?: { target: string; connected: boolean };
   controller?: { target: string; connected: boolean };
   coworkers: TeamMember[];
+}
+
+/** Authorizes a read-only local inbox lookup using exact orchestrator ownership. */
+export function resolveManagedInboxSession(input: {
+  team: IntercomTeam;
+  sessions: TeamSession[];
+  requestedSession: string;
+}): TeamSession {
+  if (!input.team.self.isManager) {
+    throw new Error("Only a manager may inspect another session's pending-ask inbox");
+  }
+  const member = input.team.coworkers.find((entry) => entry.target === input.requestedSession);
+  if (!member) {
+    throw new Error(`Pending-ask inbox access denied for "${input.requestedSession}"; select an owned coworker target returned by intercom_team`);
+  }
+  const liveSession = input.sessions.find((session) => session.id === input.requestedSession);
+  if (!liveSession) {
+    throw new Error(`Pending-ask inbox access denied for "${input.requestedSession}"; the owned coworker target must equal an exact connected stable session ID`);
+  }
+  if (liveSession.origin === "remote") {
+    throw new Error(`Pending-ask inbox "${input.requestedSession}" is remote and cannot be read from this host`);
+  }
+  return liveSession;
 }
 
 const LIVE_STATES = new Set(["provisioning", "running", "idle", "needs_attention", "stopping"]);
