@@ -1,13 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter, once } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { pendingAskId, ReplyTracker } from "./reply-tracker.ts";
-import { PersistentInboundInbox } from "./inbound-inbox.ts";
+import { PersistentInboundInbox, readPendingAsksSnapshot } from "./inbound-inbox.ts";
 import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
+import { getAgentDirPath } from "./broker/paths.ts";
 import { ORCHESTRATOR_READINESS_ACK, ORCHESTRATOR_READINESS_PROBE } from "./boss-team-scope.ts";
 import type { Message, SessionInfo } from "./types.ts";
 import {
@@ -131,6 +132,49 @@ test("persistent inbound inbox retains replyable asks after message consumption"
 
     const answered = new PersistentInboundInbox("stable-receiver", runtimeDir);
     assert.deepEqual(answered.listPendingAsks(), []);
+  } finally {
+    rmSync(runtimeDir, { recursive: true, force: true });
+  }
+});
+
+test("read-only pending snapshots fail closed without changing foreign inbox files", () => {
+  const runtimeDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-pending-snapshot-"));
+  const inbox = new PersistentInboundInbox("foreign-session", runtimeDir);
+  inbox.enqueue({
+    id: "manager-id",
+    name: "manager",
+    cwd: "/tmp/project",
+    model: "test-model",
+    pid: 1,
+    startedAt: 1,
+    lastActivity: 1,
+  }, {
+    id: "foreign-wire-id",
+    timestamp: 1,
+    expectsReply: true,
+    content: { text: "Foreign ask body" },
+  }, 1000);
+
+  try {
+    const inboxDir = path.join(runtimeDir, "inbox");
+    const [fileName] = readdirSync(inboxDir);
+    assert.ok(fileName);
+    const filePath = path.join(inboxDir, fileName);
+    const currentRaw = readFileSync(filePath, "utf8");
+    assert.equal(readPendingAsksSnapshot("foreign-session", runtimeDir).length, 1);
+    assert.equal(readFileSync(filePath, "utf8"), currentRaw);
+
+    const corruptRaw = "{not-json";
+    writeFileSync(filePath, corruptRaw);
+    assert.throws(() => readPendingAsksSnapshot("foreign-session", runtimeDir), /JSON/);
+    assert.equal(readFileSync(filePath, "utf8"), corruptRaw);
+    assert.deepEqual(readdirSync(inboxDir), [fileName]);
+
+    const skewedRaw = JSON.stringify({ ...JSON.parse(currentRaw), version: 2 });
+    writeFileSync(filePath, skewedRaw);
+    assert.throws(() => readPendingAsksSnapshot("foreign-session", runtimeDir), /Unsupported persistent inbound inbox version/);
+    assert.equal(readFileSync(filePath, "utf8"), skewedRaw);
+    assert.deepEqual(readdirSync(inboxDir), [fileName]);
   } finally {
     rmSync(runtimeDir, { recursive: true, force: true });
   }
@@ -1340,6 +1384,91 @@ test("split intercom tools are the default model-facing schema", { concurrency: 
   } finally {
     if (previous === undefined) delete process.env.PI_INTERCOM_LEGACY_TOOL;
     else process.env.PI_INTERCOM_LEGACY_TOOL = previous;
+  }
+});
+
+test("ordinary orchestrator managers inspect only exact connected owned-worker inbox targets", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const ownedWorker = createAcknowledgingClient();
+  const otherWorker = createAcknowledgingClient();
+  const managerId = "ordinary-manager-session";
+  const ownedWorkerId = "ordinary-owned-worker-session";
+  const otherWorkerId = "other-manager-worker-session";
+  const agentDir = getAgentDirPath();
+  const workersDir = path.join(agentDir, "intercom", "orchestrator");
+  const workersPath = path.join(workersDir, "workers.json");
+  const previousWorkers = existsSync(workersPath) ? readFileSync(workersPath, "utf8") : undefined;
+  const ordinaryEnvKeys = [
+    "AGENT_INTERCOM_WORKER_ID",
+    "AGENT_INTERCOM_RUN_ID",
+    "AGENT_INTERCOM_MANAGER_TARGET",
+    "AGENT_INTERCOM_MANAGER_SESSION_ID",
+  ] as const;
+  const previousEnv = new Map(ordinaryEnvKeys.map((key) => [key, process.env[key]]));
+  let harness: ReturnType<typeof createExtensionHarness> | undefined;
+
+  try {
+    for (const key of ordinaryEnvKeys) delete process.env[key];
+    mkdirSync(workersDir, { recursive: true });
+    writeFileSync(workersPath, JSON.stringify({
+      version: 1,
+      workers: [
+        { id: "owned-record-alias", runId: "owned-run", owned: true, managerSessionId: managerId, intercomTarget: ownedWorkerId, state: "running" },
+        { id: "other-record-alias", runId: "other-run", owned: true, managerSessionId: "other-manager-session", intercomTarget: otherWorkerId, state: "running" },
+      ],
+    }));
+    await ownedWorker.connect({ name: "owned-worker-name", cwd: repoDir, model: "test-model", pid: process.pid, startedAt: Date.now(), lastActivity: Date.now() }, ownedWorkerId);
+    await otherWorker.connect({ name: "other-worker-name", cwd: repoDir, model: "test-model", pid: process.pid, startedAt: Date.now(), lastActivity: Date.now() }, otherWorkerId);
+    new PersistentInboundInbox(ownedWorkerId).enqueue({
+      id: managerId,
+      name: "ordinary-manager",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    }, {
+      id: "ordinary-owned-wire-id",
+      timestamp: Date.now(),
+      expectsReply: true,
+      content: { text: "Owned worker full body marker" },
+    });
+
+    harness = createExtensionHarness("ordinary-manager", { sessionId: managerId });
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await waitForSessionId(planner, managerId);
+    const pendingTool = harness.tools.find((tool) => tool.name === "intercom_pending")!;
+
+    const allowed = await pendingTool.execute("ordinary-owned-exact", { session: ownedWorkerId }, new AbortController().signal, undefined, harness.ctx);
+    assert.notEqual(allowed.details?.error, true);
+    assert.equal((allowed.details as any).inboxSessionId, ownedWorkerId);
+    assert.doesNotMatch(JSON.stringify(allowed), /ordinary-owned-wire-id/);
+
+    for (const deniedTarget of ["owned-record-alias", "owned-worker-name", "ordinary-owned", otherWorkerId]) {
+      const denied = await pendingTool.execute(`ordinary-denied-${deniedTarget}`, { session: deniedTarget }, new AbortController().signal, undefined, harness.ctx);
+      assert.equal(denied.details?.error, true, deniedTarget);
+      assert.match(denied.content[0]?.text ?? "", /access denied/, deniedTarget);
+    }
+
+    await ownedWorker.disconnect();
+    await waitForNoSessionId(planner, ownedWorkerId);
+    const deniedOffline = await pendingTool.execute("ordinary-owned-offline", { session: ownedWorkerId }, new AbortController().signal, undefined, harness.ctx);
+    assert.equal(deniedOffline.details?.error, true);
+    assert.match(deniedOffline.content[0]?.text ?? "", /access denied/);
+  } finally {
+    if (harness) await harness.emitLifecycle("session_shutdown");
+    await ownedWorker.disconnect().catch(() => undefined);
+    await otherWorker.disconnect().catch(() => undefined);
+    await cleanup();
+    if (previousWorkers === undefined) rmSync(workersPath, { force: true });
+    else writeFileSync(workersPath, previousWorkers);
+    for (const key of ordinaryEnvKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

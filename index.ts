@@ -15,9 +15,9 @@ import { formatSessionDisplayName, sanitizeDisplayText, sessionOriginLabel, shor
 import { getAskTimeoutMs, getAskWaitMs, loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, SessionRegistration, Message, Attachment } from "./types.ts";
 import { pendingAskId, ReplyTracker, type IntercomContext } from "./reply-tracker.ts";
-import { InboundMessageConflictError, PersistentInboundInbox, type StoredInboundMessage } from "./inbound-inbox.ts";
+import { InboundMessageConflictError, PersistentInboundInbox, readPendingAsksSnapshot, type StoredInboundMessage } from "./inbound-inbox.ts";
 import { PersistentOutboundOutbox } from "./outbound-outbox.ts";
-import { formatIntercomTeam, resolveBossIntercomTeam, resolveIntercomTeam } from "./team.ts";
+import { formatIntercomTeam, resolveBossIntercomTeam, resolveIntercomTeam, resolveManagedInboxSession } from "./team.ts";
 import { authorizeBossSender, BossTeamScopeError, bossSelfSessionError, filterBossSessions, isBossControllerReadinessControl, readBossTeamScope, resolveBossLiveTarget } from "./boss-team-scope.ts";
 import {
   INTERCOM_CONTROL_DELIVERY_EVENT,
@@ -1253,24 +1253,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
 
     const { sessions, team } = await resolveCurrentIntercomTeam(activeClient);
-    if (!team.self.isManager) {
-      throw new Error("Only a manager may inspect another session's pending-ask inbox");
-    }
-    const member = team.coworkers.find((entry) => entry.id === requestedSession || entry.target === requestedSession);
-    if (!member) {
-      throw new Error(`Pending-ask inbox access denied for "${requestedSession}"; select an owned coworker returned by intercom_team`);
-    }
-    const liveSession = sessions.find((session) => session.id === member.target);
-    if (!liveSession) {
-      throw new Error(`Pending-ask inbox access denied for "${requestedSession}"; the owned coworker must have an exact connected stable session ID`);
-    }
-    if (liveSession.origin === "remote") {
-      throw new Error(`Pending-ask inbox "${requestedSession}" is remote and cannot be read from this host`);
-    }
+    const liveSession = resolveManagedInboxSession({ team, sessions, requestedSession });
     const inboxSessionId = liveSession.id;
     const cutoff = Date.now() - getAskTimeoutMs();
-    const contexts = new PersistentInboundInbox(inboxSessionId)
-      .listPendingAsks()
+    const contexts = readPendingAsksSnapshot(inboxSessionId)
       .filter((entry) => entry.receivedAt >= cutoff)
       .map(({ from, message, receivedAt }) => ({ from, message, receivedAt }));
     return { inboxSessionId, contexts };

@@ -130,6 +130,34 @@ function sessionInboxFileName(sessionId: string): string {
   return `${digest}.json`;
 }
 
+function sessionInboxFilePath(sessionId: string, intercomDir: string): string {
+  return join(intercomDir, "inbox", sessionInboxFileName(sessionId));
+}
+
+/**
+ * Reads another session's current-format pending asks without creating,
+ * migrating, rewriting, or quarantining its inbox file.
+ */
+export function readPendingAsksSnapshot(
+  sessionId: string,
+  intercomDir: string = getIntercomDirPath(),
+): StoredInboundMessage[] {
+  const filePath = sessionInboxFilePath(sessionId, intercomDir);
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+
+  const parsed: unknown = JSON.parse(raw);
+  if (!isObject(parsed) || parsed.version !== INBOX_STATE_VERSION) {
+    throw new Error("Unsupported persistent inbound inbox version for read-only inspection");
+  }
+  return parseState(raw).pendingAsks.map((entry) => ({ ...entry }));
+}
+
 export class PersistentInboundInbox {
   private readonly filePath: string;
   private state: InboxState;
@@ -140,7 +168,7 @@ export class PersistentInboundInbox {
     const inboxDir = join(intercomDir, "inbox");
     mkdirSync(inboxDir, { recursive: true, mode: INTERCOM_DIR_MODE });
     if (process.platform !== "win32") chmodSync(inboxDir, INTERCOM_DIR_MODE);
-    this.filePath = join(inboxDir, sessionInboxFileName(sessionId));
+    this.filePath = sessionInboxFilePath(sessionId, intercomDir);
     this.state = this.loadState();
     for (const key of this.state.seen) this.seen.add(key);
   }
