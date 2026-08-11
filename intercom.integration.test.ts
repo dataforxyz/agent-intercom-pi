@@ -51,7 +51,7 @@ process.env.PI_INTERCOM_LEGACY_TOOL = "1";
 delete process.env.PI_CODING_AGENT_DIR;
 for (const key of bossEnvKeys) delete process.env[key];
 const { IntercomClient } = await import("./broker/client.ts");
-const { chooseContactTarget, formatContactInstruction } = await import("./index.ts");
+const { chooseContactTarget, formatContactInstruction, isEmptyRpcBootstrapSession } = await import("./index.ts");
 process.on("exit", () => {
   process.env.HOME = previousHome;
   process.env.USERPROFILE = previousUserProfile;
@@ -2089,6 +2089,15 @@ test("idle name poll propagates /name changes without other activity", { concurr
   }
 });
 
+test("owned empty RPC peers are not classified as provider discovery probes", () => {
+  const ctx = {
+    mode: "rpc",
+    sessionManager: { getEntries: () => [] },
+  } as never;
+  assert.equal(isEmptyRpcBootstrapSession(ctx, {}), true);
+  assert.equal(isEmptyRpcBootstrapSession(ctx, { AGENT_INTERCOM_OWNED: "1" }), false);
+});
+
 test("empty RPC provider probes defer broker registration until the first real turn", { concurrency: false }, async () => {
   const { planner, cleanup } = await setupClients();
   const harness = createExtensionHarness("rpc-provider-probe", {
@@ -2108,6 +2117,30 @@ test("empty RPC provider probes defer broker registration until the first real t
     const registered = await waitForSessionId(planner, "session-rpc-provider-probe");
     assert.equal(registered.name, "rpc-provider-probe");
   } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("owned empty RPC peers register before their first turn for readiness", { concurrency: false }, async () => {
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("rpc-owned-peer", {
+    mode: "rpc",
+    sessionId: "session-rpc-owned-peer",
+    sessionEntries: [],
+  });
+  const previousOwned = process.env.AGENT_INTERCOM_OWNED;
+  process.env.AGENT_INTERCOM_OWNED = "1";
+
+  try {
+    const { default: piIntercomExtension } = await import("./index.ts");
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const registered = await waitForSessionId(planner, "session-rpc-owned-peer");
+    assert.equal(registered.name, "rpc-owned-peer");
+  } finally {
+    if (previousOwned === undefined) delete process.env.AGENT_INTERCOM_OWNED;
+    else process.env.AGENT_INTERCOM_OWNED = previousOwned;
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
   }

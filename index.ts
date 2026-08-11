@@ -50,7 +50,15 @@ const SUBAGENT_CHILD_AGENT_ENV = "PI_SUBAGENT_CHILD_AGENT";
 const SUBAGENT_CHILD_INDEX_ENV = "PI_SUBAGENT_CHILD_INDEX";
 const SUBAGENT_INTERCOM_SESSION_NAME_ENV = "PI_SUBAGENT_INTERCOM_SESSION_NAME";
 
-export function isEmptyRpcBootstrapSession(ctx: ExtensionContext): boolean {
+export function isEmptyRpcBootstrapSession(
+  ctx: ExtensionContext,
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  // Fleet-owned Pi peers must join Intercom before their first model turn so
+  // the orchestrator can complete its exact-run readiness handshake. They are
+  // intentionally launched as otherwise-empty RPC sessions, so deferring them
+  // here deadlocks readiness and causes the orchestrator to stop a healthy peer.
+  if (environment.AGENT_INTERCOM_OWNED === "1") return false;
   if (ctx.mode !== "rpc") return false;
   const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
     getEntries?: () => Array<{ type?: string }>;
