@@ -1,3 +1,5 @@
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute } from "node:path";
 import type { SessionInfo } from "./types.ts";
 
 type BossSession = Pick<SessionInfo, "id">;
@@ -8,6 +10,7 @@ export const BOSS_ENV_NAMES = [
   "AGENT_INTERCOM_BOSS_CONTROLLER_TARGET",
   "AGENT_INTERCOM_BOSS_MANAGER_TARGET",
   "AGENT_INTERCOM_BOSS_TEAM_TARGETS",
+  "AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE",
   "AGENT_INTERCOM_BOSS_VISIBILITY",
 ] as const;
 
@@ -92,16 +95,35 @@ export function readBossTeamScope(env: NodeJS.ProcessEnv = process.env): BossTea
   }
 
   let teamTargets: unknown;
-  try {
-    teamTargets = JSON.parse(env.AGENT_INTERCOM_BOSS_TEAM_TARGETS ?? "");
-  } catch {
-    return invalid("AGENT_INTERCOM_BOSS_TEAM_TARGETS must be a JSON array of exact stable session IDs");
+  const sourcePath = env.AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE;
+  if (sourcePath !== undefined) {
+    try {
+      if (!exactNonEmptyString(sourcePath) || !isAbsolute(sourcePath) || basename(sourcePath) !== `${runId}.json` || basename(dirname(sourcePath)) !== "boss-team-targets") throw new Error("path");
+      const metadata = lstatSync(sourcePath);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.uid !== process.getuid?.() || (metadata.mode & 0o022) !== 0 || realpathSync(sourcePath) !== sourcePath) throw new Error("ownership");
+      const parsed = JSON.parse(readFileSync(sourcePath, "utf8")) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).sort().join("\0") !== ["bossRunId", "controllerTarget", "managerTarget", "targets", "updatedAt", "version"].sort().join("\0")
+        || parsed.version !== "orc.boss-team-targets.v1" || parsed.bossRunId !== runId || parsed.controllerTarget !== controllerTarget || parsed.managerTarget !== managerTarget
+        || !exactNonEmptyString(parsed.updatedAt) || !Number.isFinite(Date.parse(parsed.updatedAt))) throw new Error("content");
+      teamTargets = parsed.targets;
+    } catch {
+      return invalid("AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE must be an exact owner-only canonical run target source");
+    }
+  } else {
+    try {
+      teamTargets = JSON.parse(env.AGENT_INTERCOM_BOSS_TEAM_TARGETS ?? "");
+    } catch {
+      return invalid("AGENT_INTERCOM_BOSS_TEAM_TARGETS must be a JSON array of exact stable session IDs");
+    }
   }
   if (!Array.isArray(teamTargets) || !teamTargets.every(exactNonEmptyString)) {
-    return invalid("AGENT_INTERCOM_BOSS_TEAM_TARGETS must be a JSON array of exact stable session IDs");
+    return invalid("Boss team targets must be a JSON array of exact stable session IDs");
   }
   const targetSet = new Set(teamTargets);
-  if (teamTargets.length !== expectedTargets.length || targetSet.size !== expectedTargets.length || expectedTargets.some((target) => !targetSet.has(target))) {
+  if (targetSet.size !== teamTargets.length || !targetSet.has(managerTarget)) {
+    return invalid("Boss team targets must be unique and include the exact Manager target");
+  }
+  if (sourcePath === undefined && (teamTargets.length !== expectedTargets.length || expectedTargets.some((target) => !targetSet.has(target)))) {
     return invalid("AGENT_INTERCOM_BOSS_TEAM_TARGETS must contain exactly the canonical manager, worker, scout, and adversary session IDs for the run");
   }
   if (targetSet.has(controllerTarget)) {
@@ -121,7 +143,7 @@ export function readBossTeamScope(env: NodeJS.ProcessEnv = process.env): BossTea
     role,
     controllerTarget,
     managerTarget,
-    teamTargets: Object.freeze(expectedTargets),
+    teamTargets: Object.freeze([...(teamTargets as string[])]),
     selfTarget: `boss-${role}-${runSuffix}`,
     runSuffix,
     visibility,

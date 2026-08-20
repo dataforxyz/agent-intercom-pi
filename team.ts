@@ -18,6 +18,15 @@ interface StoredWorker {
   owned?: unknown;
   managerSessionId?: unknown;
   intercomTarget?: unknown;
+  workerIncarnationId?: unknown;
+  hierarchy?: unknown;
+  delegationGrant?: unknown;
+}
+
+interface StoredHierarchy {
+  rootWorkerIncarnationId: string;
+  parentWorkerIncarnationId?: string;
+  depth: number;
 }
 
 export interface TeamMember {
@@ -71,6 +80,35 @@ function connectedTo(sessions: TeamSession[], target: string): boolean {
   return sessions.some((session) => session.id === target || session.name?.toLowerCase() === normalized);
 }
 
+function storedHierarchy(value: unknown): StoredHierarchy | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const rootWorkerIncarnationId = stringValue(record.rootWorkerIncarnationId);
+  const parentWorkerIncarnationId = stringValue(record.parentWorkerIncarnationId);
+  const depth = record.depth;
+  if (!rootWorkerIncarnationId || !Number.isSafeInteger(depth) || (depth as number) < 0) return undefined;
+  if ((depth === 0 && parentWorkerIncarnationId) || (depth !== 0 && !parentWorkerIncarnationId)) return undefined;
+  return { rootWorkerIncarnationId, ...(parentWorkerIncarnationId ? { parentWorkerIncarnationId } : {}), depth: depth as number };
+}
+
+function workerIncarnation(worker: StoredWorker): string | undefined {
+  return stringValue(worker.workerIncarnationId) ?? stringValue(worker.runId);
+}
+
+function teamMember(worker: StoredWorker, sessions: TeamSession[]): TeamMember | undefined {
+  const id = stringValue(worker.id);
+  if (!id) return undefined;
+  const target = stringValue(worker.intercomTarget) ?? id;
+  return {
+    id,
+    target,
+    ...(stringValue(worker.harness) ? { harness: stringValue(worker.harness) } : {}),
+    ...(stringValue(worker.role) ? { role: stringValue(worker.role) } : {}),
+    ...(stringValue(worker.state) ? { state: stringValue(worker.state) } : {}),
+    connected: connectedTo(sessions, target),
+  };
+}
+
 async function readWorkers(agentDir: string): Promise<StoredWorker[]> {
   try {
     const parsed = JSON.parse(await readFile(join(agentDir, "intercom", "orchestrator", "workers.json"), "utf8")) as { workers?: unknown };
@@ -90,9 +128,37 @@ export async function resolveIntercomTeam(input: {
   const workers = await readWorkers(input.agentDir ?? getAgentDirPath());
   const workerId = stringValue(env.AGENT_INTERCOM_WORKER_ID);
   const runId = stringValue(env.AGENT_INTERCOM_RUN_ID);
-  const current = workerId
-    ? workers.find((worker) => stringValue(worker.id) === workerId && (!runId || stringValue(worker.runId) === runId))
-    : undefined;
+  const currentMatches = workerId
+    ? workers.filter((worker) => stringValue(worker.id) === workerId && (!runId || workerIncarnation(worker) === runId))
+    : [];
+  const current = currentMatches.length === 1 ? currentMatches[0] : undefined;
+  const currentHierarchy = storedHierarchy(current?.hierarchy);
+  const currentIncarnation = current ? workerIncarnation(current) : undefined;
+  if (current && currentHierarchy && currentIncarnation) {
+    const parentMatches = currentHierarchy.parentWorkerIncarnationId
+      ? workers.filter((worker) => worker.owned === true && workerIncarnation(worker) === currentHierarchy.parentWorkerIncarnationId)
+      : [];
+    const parent = parentMatches.length === 1 ? parentMatches[0] : undefined;
+    const managerTarget = parent ? stringValue(parent.intercomTarget) ?? stringValue(parent.id) : undefined;
+    const coworkers = workers
+      .filter((worker) => worker.owned === true && LIVE_STATES.has(stringValue(worker.state) ?? ""))
+      .filter((worker) => storedHierarchy(worker.hierarchy)?.parentWorkerIncarnationId === currentIncarnation)
+      .map((worker) => teamMember(worker, input.sessions))
+      .filter((member): member is TeamMember => Boolean(member));
+    const isManager = currentHierarchy.depth === 0 || current?.delegationGrant != null || coworkers.length > 0;
+    return {
+      teamId: currentHierarchy.rootWorkerIncarnationId,
+      self: { id: input.selfId, ...(workerId ? { workerId } : {}), isManager },
+      ...(managerTarget
+        ? { manager: { target: managerTarget, connected: connectedTo(input.sessions, managerTarget) } }
+        : currentHierarchy.depth === 0
+          ? { manager: { target: input.selfId, connected: true } }
+          : {}),
+      coworkers,
+    };
+  }
+
+  // Legacy stores have no durable hierarchy. Preserve the original manager-session projection.
   const managerTarget = stringValue(current?.managerSessionId) ?? stringValue(env.AGENT_INTERCOM_MANAGER_TARGET) ?? stringValue(env.AGENT_INTERCOM_MANAGER_SESSION_ID);
   const teamId = managerTarget ?? input.selfId;
   const isManager = !managerTarget;
@@ -101,19 +167,7 @@ export async function resolveIntercomTeam(input: {
     .filter((worker) => stringValue(worker.managerSessionId) === teamId)
     .filter((worker) => LIVE_STATES.has(stringValue(worker.state) ?? ""))
     .filter((worker) => stringValue(worker.id) !== workerId)
-    .map((worker): TeamMember | undefined => {
-      const id = stringValue(worker.id);
-      if (!id) return undefined;
-      const target = stringValue(worker.intercomTarget) ?? id;
-      return {
-        id,
-        target,
-        ...(stringValue(worker.harness) ? { harness: stringValue(worker.harness) } : {}),
-        ...(stringValue(worker.role) ? { role: stringValue(worker.role) } : {}),
-        ...(stringValue(worker.state) ? { state: stringValue(worker.state) } : {}),
-        connected: connectedTo(input.sessions, target),
-      };
-    })
+    .map((worker) => teamMember(worker, input.sessions))
     .filter((member): member is TeamMember => Boolean(member));
 
   return {

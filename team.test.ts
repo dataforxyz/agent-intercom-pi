@@ -25,6 +25,66 @@ test("intercom team resolves the current manager and live coworkers after adopti
   } finally { await rm(agentDir, { recursive: true, force: true }); }
 });
 
+test("v4 hierarchy projects the exact parent and direct children for a delegated manager", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "intercom-hierarchy-team-"));
+  const storeDir = join(agentDir, "intercom", "orchestrator");
+  await mkdir(storeDir, { recursive: true });
+  const hierarchical = (id: string, incarnation: string, depth: number, parent?: string) => ({
+    id,
+    runId: incarnation,
+    workerIncarnationId: incarnation,
+    harness: "pi",
+    role: "reviewer",
+    state: "running",
+    owned: true,
+    managerSessionId: "legacy-controller",
+    intercomTarget: `${id}-target`,
+    hierarchy: { rootWorkerIncarnationId: "root-inc", depth, ...(parent ? { parentWorkerIncarnationId: parent } : {}) },
+  });
+  try {
+    await writeFile(join(storeDir, "workers.json"), JSON.stringify({ version: 4, workers: [
+      hierarchical("root", "root-inc", 0),
+      { ...hierarchical("self", "self-inc", 1, "root-inc"), delegationGrant: { grantId: "active-grant" } },
+      hierarchical("direct-b", "child-b-inc", 2, "self-inc"),
+      hierarchical("grandchild", "grandchild-inc", 3, "child-b-inc"),
+      hierarchical("direct-a", "child-a-inc", 2, "self-inc"),
+      hierarchical("sibling", "sibling-inc", 1, "root-inc"),
+    ] }));
+    const team = await resolveIntercomTeam({
+      selfId: "self-target",
+      agentDir,
+      env: { AGENT_INTERCOM_WORKER_ID: "self", AGENT_INTERCOM_RUN_ID: "self-inc", AGENT_INTERCOM_MANAGER_SESSION_ID: "spoofed-legacy-manager" },
+      sessions: [{ id: "root-target" }, { id: "direct-a-target" }],
+    });
+    assert.equal(team.teamId, "root-inc");
+    assert.deepEqual(team.self, { id: "self-target", workerId: "self", isManager: true });
+    assert.deepEqual(team.manager, { target: "root-target", connected: true });
+    assert.deepEqual(team.coworkers.map(({ id, target, connected }) => ({ id, target, connected })), [
+      { id: "direct-b", target: "direct-b-target", connected: false },
+      { id: "direct-a", target: "direct-a-target", connected: true },
+    ]);
+    assert.ok(!team.coworkers.some((entry) => entry.id === "grandchild" || entry.id === "sibling"));
+  } finally { await rm(agentDir, { recursive: true, force: true }); }
+});
+
+test("v4 hierarchy fails closed on stale current incarnation and missing parent", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "intercom-hierarchy-stale-"));
+  const storeDir = join(agentDir, "intercom", "orchestrator");
+  await mkdir(storeDir, { recursive: true });
+  try {
+    const self = { ...worker("self", "live-inc", "legacy-manager"), workerIncarnationId: "live-inc", hierarchy: { rootWorkerIncarnationId: "root-inc", parentWorkerIncarnationId: "missing-parent", depth: 1 }, delegationGrant: { grantId: "grant" } };
+    await writeFile(join(storeDir, "workers.json"), JSON.stringify({ version: 4, workers: [self] }));
+    const stale = await resolveIntercomTeam({ selfId: "self-target", agentDir, env: { AGENT_INTERCOM_WORKER_ID: "self", AGENT_INTERCOM_RUN_ID: "stale-inc", AGENT_INTERCOM_MANAGER_SESSION_ID: "untrusted-fallback" }, sessions: [] });
+    assert.equal(stale.self.isManager, false);
+    assert.deepEqual(stale.coworkers, []);
+
+    const live = await resolveIntercomTeam({ selfId: "self-target", agentDir, env: { AGENT_INTERCOM_WORKER_ID: "self", AGENT_INTERCOM_RUN_ID: "live-inc", AGENT_INTERCOM_MANAGER_SESSION_ID: "untrusted-fallback" }, sessions: [] });
+    assert.equal(live.self.isManager, true);
+    assert.equal(live.manager, undefined);
+    assert.deepEqual(live.coworkers, []);
+  } finally { await rm(agentDir, { recursive: true, force: true }); }
+});
+
 test("ordinary manager formatting does not invent Boss Controller metadata", () => {
   const text = formatIntercomTeam({
     self: { id: "ordinary-manager", isManager: true },

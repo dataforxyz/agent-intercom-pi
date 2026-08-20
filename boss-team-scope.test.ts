@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { chmod, mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   authorizeBossSender,
@@ -32,6 +35,36 @@ function metadata(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     ...overrides,
   };
 }
+
+test("Boss target source is owner-checked, dynamic, and deny-all on mismatch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "boss-target-source-"));
+  const directory = join(root, "boss-team-targets");
+  const sourcePath = join(directory, `${runId}.json`);
+  await mkdir(directory, { mode: 0o700 });
+  const source = {
+    version: "orc.boss-team-targets.v1",
+    bossRunId: runId,
+    controllerTarget: "controller-stable-session-id",
+    managerTarget: targets.manager,
+    targets: [targets.manager, "dynamic-scout-exact-target"],
+    updatedAt: "2026-08-19T12:00:00.000Z",
+  };
+  await writeFile(sourcePath, JSON.stringify(source), { mode: 0o600 });
+  const scoped = readBossTeamScope(metadata({ AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
+  assert.equal(scoped.valid, true);
+  if (scoped.valid) assert.deepEqual(scoped.teamTargets, source.targets);
+
+  await chmod(sourcePath, 0o622);
+  const writable = readBossTeamScope(metadata({ AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
+  assert.equal(writable.valid, false);
+  assert.deepEqual([...bossAllowedTargets(writable) ?? []], []);
+
+  await chmod(sourcePath, 0o600);
+  await writeFile(sourcePath, JSON.stringify({ ...source, bossRunId: "boss-00000000-0000-4000-8000-000000000000" }));
+  const mismatched = readBossTeamScope(metadata({ AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
+  assert.equal(mismatched.valid, false);
+  assert.deepEqual([...bossAllowedTargets(mismatched) ?? []], []);
+});
 
 test("Boss metadata derives the exact canonical roster and role identity", () => {
   for (const role of ["manager", "worker", "scout", "adversary"] as const) {

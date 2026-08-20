@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Project delegated-manager hierarchy in `intercom_team` from exact durable worker incarnation links: ordinary delegated managers see their exact parent and live direct children only, while legacy non-hierarchy stores retain manager-session behavior. The projection remains read-only and is not an authorization source.
 - Give unresolved inbound asks deterministic receiver-local IDs, keep compact previews in list mode, add untruncated full-body retrieval and exact reply selection by ask ID, and let managers inspect only their owned coworkers' pending inboxes.
 - Show millisecond send/delivery timestamps and deltas on Intercom tool results, plus sent/received/read timestamps and per-stage latency on inbound TUI messages.
 - Prevent two live local runtimes from repeatedly evicting each other when they open the same stable Pi session ID. Reconnects from one runtime retain safe stale-socket replacement, while a different runtime receives `SESSION_ID_IN_USE` and the original connection remains authoritative. Fence defer/cancel controls from superseded sockets after an allowed reconnect.
