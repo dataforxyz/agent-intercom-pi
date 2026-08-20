@@ -69,7 +69,7 @@ export function resolveManagedInboxSession(input: {
   return liveSession;
 }
 
-const LIVE_STATES = new Set(["provisioning", "running", "idle", "needs_attention", "stopping"]);
+const LIVE_STATES = new Set(["provisioning", "registering", "ready", "working", "waiting", "paused", "stalled", "blocked", "lost", "unreachable"]);
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -134,26 +134,26 @@ export async function resolveIntercomTeam(input: {
   const current = currentMatches.length === 1 ? currentMatches[0] : undefined;
   const currentHierarchy = storedHierarchy(current?.hierarchy);
   const currentIncarnation = current ? workerIncarnation(current) : undefined;
-  if (current && currentHierarchy && currentIncarnation) {
+  if (current && currentHierarchy && currentIncarnation && (currentHierarchy.depth > 0 || current.delegationGrant != null)) {
     const parentMatches = currentHierarchy.parentWorkerIncarnationId
       ? workers.filter((worker) => worker.owned === true && workerIncarnation(worker) === currentHierarchy.parentWorkerIncarnationId)
       : [];
     const parent = parentMatches.length === 1 ? parentMatches[0] : undefined;
-    const managerTarget = parent ? stringValue(parent.intercomTarget) ?? stringValue(parent.id) : undefined;
+    const managerTarget = parent
+      ? stringValue(parent.intercomTarget) ?? stringValue(parent.id)
+      : currentHierarchy.depth === 0
+        ? stringValue(current.managerSessionId) ?? stringValue(env.AGENT_INTERCOM_MANAGER_TARGET) ?? stringValue(env.AGENT_INTERCOM_MANAGER_SESSION_ID)
+        : undefined;
     const coworkers = workers
       .filter((worker) => worker.owned === true && LIVE_STATES.has(stringValue(worker.state) ?? ""))
       .filter((worker) => storedHierarchy(worker.hierarchy)?.parentWorkerIncarnationId === currentIncarnation)
       .map((worker) => teamMember(worker, input.sessions))
       .filter((member): member is TeamMember => Boolean(member));
-    const isManager = currentHierarchy.depth === 0 || current?.delegationGrant != null || coworkers.length > 0;
+    const isManager = current?.delegationGrant != null || coworkers.length > 0;
     return {
       teamId: currentHierarchy.rootWorkerIncarnationId,
       self: { id: input.selfId, ...(workerId ? { workerId } : {}), isManager },
-      ...(managerTarget
-        ? { manager: { target: managerTarget, connected: connectedTo(input.sessions, managerTarget) } }
-        : currentHierarchy.depth === 0
-          ? { manager: { target: input.selfId, connected: true } }
-          : {}),
+      ...(managerTarget ? { manager: { target: managerTarget, connected: connectedTo(input.sessions, managerTarget) } } : {}),
       coworkers,
     };
   }

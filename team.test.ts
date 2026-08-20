@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { formatIntercomTeam, resolveIntercomTeam, resolveManagedInboxSession } from "./team.ts";
 
-const worker = (id: string, runId: string, managerSessionId: string, state = "running") => ({ id, runId, harness: "pi", role: "reviewer", state, owned: true, managerSessionId, intercomTarget: id });
+const worker = (id: string, runId: string, managerSessionId: string, state = "ready") => ({ id, runId, harness: "pi", role: "reviewer", state, owned: true, managerSessionId, intercomTarget: id });
 
 test("intercom team resolves the current manager and live coworkers after adoption", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "intercom-team-"));
@@ -35,7 +35,7 @@ test("v4 hierarchy projects the exact parent and direct children for a delegated
     workerIncarnationId: incarnation,
     harness: "pi",
     role: "reviewer",
-    state: "running",
+    state: "ready",
     owned: true,
     managerSessionId: "legacy-controller",
     intercomTarget: `${id}-target`,

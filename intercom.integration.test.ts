@@ -1418,8 +1418,8 @@ test("ordinary orchestrator managers inspect only exact connected owned-worker i
     writeFileSync(workersPath, JSON.stringify({
       version: 1,
       workers: [
-        { id: "owned-record-alias", runId: "owned-run", owned: true, managerSessionId: managerId, intercomTarget: ownedWorkerId, state: "running" },
-        { id: "other-record-alias", runId: "other-run", owned: true, managerSessionId: "other-manager-session", intercomTarget: otherWorkerId, state: "running" },
+        { id: "owned-record-alias", runId: "owned-run", owned: true, managerSessionId: managerId, intercomTarget: ownedWorkerId, state: "ready" },
+        { id: "other-record-alias", runId: "other-run", owned: true, managerSessionId: "other-manager-session", intercomTarget: otherWorkerId, state: "ready" },
       ],
     }));
     await ownedWorker.connect({ name: "owned-worker-name", cwd: repoDir, model: "test-model", pid: process.pid, startedAt: Date.now(), lastActivity: Date.now() }, ownedWorkerId);

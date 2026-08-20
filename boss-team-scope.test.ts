@@ -38,9 +38,9 @@ function metadata(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 
 test("Boss target source is owner-checked, dynamic, and deny-all on mismatch", async () => {
   const root = await mkdtemp(join(tmpdir(), "boss-target-source-"));
-  const directory = join(root, "boss-team-targets");
+  const directory = join(root, "intercom", "orchestrator", "boss-team-targets");
   const sourcePath = join(directory, `${runId}.json`);
-  await mkdir(directory, { mode: 0o700 });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   const source = {
     version: "orc.boss-team-targets.v1",
     bossRunId: runId,
@@ -50,18 +50,18 @@ test("Boss target source is owner-checked, dynamic, and deny-all on mismatch", a
     updatedAt: "2026-08-19T12:00:00.000Z",
   };
   await writeFile(sourcePath, JSON.stringify(source), { mode: 0o600 });
-  const scoped = readBossTeamScope(metadata({ AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
+  const scoped = readBossTeamScope(metadata({ PI_CODING_AGENT_DIR: root, AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
   assert.equal(scoped.valid, true);
   if (scoped.valid) assert.deepEqual(scoped.teamTargets, source.targets);
 
   await chmod(sourcePath, 0o622);
-  const writable = readBossTeamScope(metadata({ AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
+  const writable = readBossTeamScope(metadata({ PI_CODING_AGENT_DIR: root, AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
   assert.equal(writable.valid, false);
   assert.deepEqual([...bossAllowedTargets(writable) ?? []], []);
 
   await chmod(sourcePath, 0o600);
   await writeFile(sourcePath, JSON.stringify({ ...source, bossRunId: "boss-00000000-0000-4000-8000-000000000000" }));
-  const mismatched = readBossTeamScope(metadata({ AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
+  const mismatched = readBossTeamScope(metadata({ PI_CODING_AGENT_DIR: root, AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
   assert.equal(mismatched.valid, false);
   assert.deepEqual([...bossAllowedTargets(mismatched) ?? []], []);
 });
