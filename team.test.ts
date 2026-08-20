@@ -25,17 +25,17 @@ test("intercom team resolves the current manager and live coworkers after adopti
   } finally { await rm(agentDir, { recursive: true, force: true }); }
 });
 
-test("v4 hierarchy projects the exact parent and direct children for a delegated manager", async () => {
+test("v4 hierarchy projects ready and working direct children, but excludes lost children", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "intercom-hierarchy-team-"));
   const storeDir = join(agentDir, "intercom", "orchestrator");
   await mkdir(storeDir, { recursive: true });
-  const hierarchical = (id: string, incarnation: string, depth: number, parent?: string) => ({
+  const hierarchical = (id: string, incarnation: string, depth: number, parent?: string, state = "ready") => ({
     id,
     runId: incarnation,
     workerIncarnationId: incarnation,
     harness: "pi",
     role: "reviewer",
-    state: "ready",
+    state,
     owned: true,
     managerSessionId: "legacy-controller",
     intercomTarget: `${id}-target`,
@@ -45,9 +45,10 @@ test("v4 hierarchy projects the exact parent and direct children for a delegated
     await writeFile(join(storeDir, "workers.json"), JSON.stringify({ version: 4, workers: [
       hierarchical("root", "root-inc", 0),
       { ...hierarchical("self", "self-inc", 1, "root-inc"), delegationGrant: { grantId: "active-grant" } },
-      hierarchical("direct-b", "child-b-inc", 2, "self-inc"),
+      hierarchical("direct-b", "child-b-inc", 2, "self-inc", "working"),
       hierarchical("grandchild", "grandchild-inc", 3, "child-b-inc"),
       hierarchical("direct-a", "child-a-inc", 2, "self-inc"),
+      hierarchical("lost-child", "lost-child-inc", 2, "self-inc", "lost"),
       hierarchical("sibling", "sibling-inc", 1, "root-inc"),
     ] }));
     const team = await resolveIntercomTeam({
@@ -63,7 +64,7 @@ test("v4 hierarchy projects the exact parent and direct children for a delegated
       { id: "direct-b", target: "direct-b-target", connected: false },
       { id: "direct-a", target: "direct-a-target", connected: true },
     ]);
-    assert.ok(!team.coworkers.some((entry) => entry.id === "grandchild" || entry.id === "sibling"));
+    assert.ok(!team.coworkers.some((entry) => entry.id === "grandchild" || entry.id === "sibling" || entry.id === "lost-child"));
   } finally { await rm(agentDir, { recursive: true, force: true }); }
 });
 

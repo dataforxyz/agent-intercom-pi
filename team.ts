@@ -69,7 +69,7 @@ export function resolveManagedInboxSession(input: {
   return liveSession;
 }
 
-const LIVE_STATES = new Set(["provisioning", "registering", "ready", "working", "waiting", "paused", "stalled", "blocked", "lost", "unreachable"]);
+const LIVE_STATES = new Set(["provisioning", "registering", "ready", "working", "waiting", "paused", "stalled", "blocked", "unreachable"]);
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
