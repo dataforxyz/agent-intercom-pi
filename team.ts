@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getAgentDirPath } from "./broker/paths.ts";
+import { getAgentDirPath, getIntercomDirPath } from "./broker/paths.ts";
 import { bossSelfSessionError, resolveBossLiveSession, type BossTeamScope } from "./boss-team-scope.ts";
 
 export interface TeamSession {
@@ -118,9 +118,9 @@ function teamMember(worker: StoredWorker, sessions: TeamSession[]): TeamMember |
   };
 }
 
-async function readWorkers(agentDir: string): Promise<StoredWorker[]> {
+async function readWorkers(intercomDir: string): Promise<StoredWorker[]> {
   try {
-    const parsed = JSON.parse(await readFile(join(agentDir, "intercom", "orchestrator", "workers.json"), "utf8")) as { workers?: unknown };
+    const parsed = JSON.parse(await readFile(join(intercomDir, "orchestrator", "workers.json"), "utf8")) as { workers?: unknown };
     return Array.isArray(parsed.workers) ? parsed.workers as StoredWorker[] : [];
   } catch {
     return [];
@@ -134,7 +134,7 @@ export async function resolveIntercomTeam(input: {
   agentDir?: string;
 }): Promise<IntercomTeam> {
   const env = input.env ?? process.env;
-  const workers = await readWorkers(input.agentDir ?? getAgentDirPath());
+  const workers = await readWorkers(getIntercomDirPath(input.agentDir ?? getAgentDirPath(env), env));
   const workerId = stringValue(env.AGENT_INTERCOM_WORKER_ID);
   const runId = stringValue(env.AGENT_INTERCOM_RUN_ID);
   const currentMatches = workerId

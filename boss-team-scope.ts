@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDirPath } from "./broker/paths.ts";
+import { getAgentDirPath, getIntercomDirPath } from "./broker/paths.ts";
 import type { SessionInfo } from "./types.ts";
 
 type BossSession = Pick<SessionInfo, "id">;
@@ -99,7 +99,7 @@ export function readBossTeamScope(env: NodeJS.ProcessEnv = process.env): BossTea
   const sourcePath = env.AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE;
   if (sourcePath !== undefined) {
     try {
-      const expectedSourcePath = join(getAgentDirPath(env), "intercom", "orchestrator", "boss-team-targets", `${runId}.json`);
+      const expectedSourcePath = join(getIntercomDirPath(getAgentDirPath(env), env), "orchestrator", "boss-team-targets", `${runId}.json`);
       if (!exactNonEmptyString(sourcePath) || sourcePath !== expectedSourcePath) throw new Error("path");
       const metadata = lstatSync(sourcePath);
       if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.uid !== process.getuid?.() || (metadata.mode & 0o022) !== 0 || realpathSync(sourcePath) !== sourcePath) throw new Error("ownership");

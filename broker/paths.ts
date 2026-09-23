@@ -37,8 +37,14 @@ export function getAgentDirPath(
   return isAbsolute(configured) ? configured : resolve(cwd, configured);
 }
 
-export function getIntercomDirPath(agentDir: string = getAgentDirPath()): string {
-  return join(agentDir, "intercom");
+export function getIntercomDirPath(
+  agentDir: string = getAgentDirPath(),
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): string {
+  const configured = env.INTERCOM_DIR?.trim();
+  if (!configured) return join(agentDir, "intercom");
+  return isAbsolute(configured) ? configured : resolve(cwd, configured);
 }
 
 export function shouldUseWindowsTcpTransport(
@@ -81,28 +87,32 @@ export function getBrokerAuditFilePath(intercomDir: string = getIntercomDirPath(
 export function getRemoteGatewaySocketPath(
   platform: NodeJS.Platform = process.platform,
   agentDir: string = getAgentDirPath(),
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
+  const intercomDir = getIntercomDirPath(agentDir, env);
   if (platform === "win32") {
-    return `\\\\.\\pipe\\pi-intercom-remote-${sanitizePipeSegment(agentDir)}`;
+    return `\\\\.\\pipe\\pi-intercom-remote-${sanitizePipeSegment(env.INTERCOM_DIR?.trim() ? intercomDir : agentDir)}`;
   }
-  return join(getIntercomDirPath(agentDir), "remote-gateway.sock");
+  return join(intercomDir, "remote-gateway.sock");
 }
 
 export function getBrokerSocketPath(
   platform: NodeJS.Platform = process.platform,
   agentDir: string = getAgentDirPath(),
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
+  const intercomDir = getIntercomDirPath(agentDir, env);
   if (platform === "win32") {
-    return `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(agentDir)}`;
+    return `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(env.INTERCOM_DIR?.trim() ? intercomDir : agentDir)}`;
   }
 
-  return join(getIntercomDirPath(agentDir), "broker.sock");
+  return join(intercomDir, "broker.sock");
 }
 
 export function getBrokerConnectTarget(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  intercomDir: string = getIntercomDirPath(getAgentDirPath(env)),
+  intercomDir: string = getIntercomDirPath(getAgentDirPath(env), env),
 ): BrokerConnectTarget {
   if (shouldUseWindowsTcpTransport(platform, env)) {
     const endpointFile = getBrokerPortFilePath(intercomDir);
@@ -127,7 +137,7 @@ export function getBrokerConnectTarget(
     return { transport: "tcp", host: endpoint.host, port: endpoint.port, stateId: endpoint.stateId };
   }
 
-  return getBrokerSocketPath(platform, getAgentDirPath(env));
+  return getBrokerSocketPath(platform, getAgentDirPath(env), env);
 }
 
 export function getBrokerListenTarget(
@@ -138,7 +148,7 @@ export function getBrokerListenTarget(
     return { transport: "tcp", host: INTERCOM_TCP_HOST, port: 0 };
   }
 
-  return getBrokerSocketPath(platform, getAgentDirPath(env));
+  return getBrokerSocketPath(platform, getAgentDirPath(env), env);
 }
 
 export function ensureIntercomRuntimeDir(

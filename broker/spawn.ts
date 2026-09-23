@@ -178,7 +178,12 @@ export function getBrokerSpawnOptions(
     detached: true,
     stdio: "ignore",
     cwd: extensionDir,
-    env: { ...env, PI_CODING_AGENT_DIR: getAgentDirPath(env), NODE_NO_WARNINGS: "1" },
+    env: {
+      ...env,
+      PI_CODING_AGENT_DIR: getAgentDirPath(env),
+      ...(env.INTERCOM_DIR?.trim() ? { INTERCOM_DIR: getIntercomDirPath(getAgentDirPath(env), env) } : {}),
+      NODE_NO_WARNINGS: "1",
+    },
     windowsHide: true,
   };
 }

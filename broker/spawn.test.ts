@@ -120,6 +120,14 @@ test("getBrokerSpawnOptions keeps portable defaults on non-Windows platforms", (
   assert.equal(options.cwd, "/repo");
 });
 
+test("getBrokerSpawnOptions preserves the runtime directory across the broker cwd change", () => {
+  const options = getBrokerSpawnOptions("/repo", { INTERCOM_DIR: "relative-runtime", PI_CODING_AGENT_DIR: "relative-agent" });
+  assert.equal(options.cwd, "/repo");
+  assert.equal(options.env.INTERCOM_DIR, path.resolve("relative-runtime"));
+  assert.equal(options.env.PI_CODING_AGENT_DIR, path.resolve("relative-agent"));
+  assert.equal(getBrokerSpawnOptions("/repo", {}).env.INTERCOM_DIR, undefined);
+});
+
 test("getBrokerSpawnOptions passes an absolute PI_CODING_AGENT_DIR to the broker", () => {
   const options = getBrokerSpawnOptions("/repo", { PI_CODING_AGENT_DIR: "relative-agent" });
   assert.equal(options.env.PI_CODING_AGENT_DIR, path.resolve("relative-agent"));

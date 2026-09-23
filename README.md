@@ -14,6 +14,23 @@
 | OpenCode | [`agent-intercom-opencode`](https://github.com/dataforxyz/agent-intercom-opencode) |
 | Fleet lifecycle | [`agent-intercom-orchestrator`](https://github.com/dataforxyz/agent-intercom-orchestrator) |
 
+## Runtime directory
+
+Set `INTERCOM_DIR` to keep Intercom state outside Pi's configuration directory.
+All participating adapters and the broker must support this override and receive
+the same directory. It contains sockets, credentials, inboxes/outboxes, Intercom
+configuration, and team state. It does not change Pi's own configuration root.
+
+Relative values resolve against the launching process's working directory; the
+broker receives an absolute path even when it starts in another directory. Empty
+or whitespace-only values retain the default: `$PI_CODING_AGENT_DIR/intercom`, or
+`~/.pi/agent/intercom` when the Pi directory is unset. Unix directory/file modes
+remain `0700`/`0600`. Without an override, Windows pipe names also stay unchanged;
+with one, pipe identity derives from the selected runtime directory.
+
+Existing state is not migrated. Restart participating sessions together when
+changing the directory; clients using different directories join different brokers.
+
 ## Origin and thanks
 
 Agent Intercom grew from [Nico Bailon's original `pi-intercom`](https://github.com/nicobailon/pi-intercom). A sincere thank you to Nico and the original contributors for creating the Pi extension and the foundation this cross-harness family builds on.

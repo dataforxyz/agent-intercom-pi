@@ -46,6 +46,22 @@ test("getIntercomDirPath points at the intercom runtime directory under the agen
   assert.equal(getBrokerAuditFilePath("/tmp/pi-agent/intercom"), join("/tmp/pi-agent/intercom", "broker-audit.jsonl"));
 });
 
+test("INTERCOM_DIR selects shared runtime storage without relocating the Pi agent directory", () => {
+  const env = { PI_CODING_AGENT_DIR: "/tmp/pi-agent", INTERCOM_DIR: " /tmp/shared-intercom " };
+  assert.equal(getAgentDirPath(env), "/tmp/pi-agent");
+  assert.equal(getIntercomDirPath("/tmp/pi-agent", env), "/tmp/shared-intercom");
+  assert.equal(getIntercomDirPath("/tmp/pi-agent", {}), "/tmp/pi-agent/intercom");
+  assert.equal(getIntercomDirPath("/tmp/pi-agent", { INTERCOM_DIR: "  " }), "/tmp/pi-agent/intercom");
+  assert.equal(getIntercomDirPath("/tmp/pi-agent", { INTERCOM_DIR: "state" }, "/workspace"), "/workspace/state");
+  for (const platform of ["linux", "darwin"] as const) {
+    assert.equal(getBrokerConnectTarget(platform, env), "/tmp/shared-intercom/broker.sock");
+    assert.equal(getBrokerListenTarget(platform, env), "/tmp/shared-intercom/broker.sock");
+    assert.equal(getRemoteGatewaySocketPath(platform, "/tmp/pi-agent", env), "/tmp/shared-intercom/remote-gateway.sock");
+  }
+  assert.equal(getBrokerSocketPath("win32", "/tmp/pi-agent", env), getBrokerSocketPath("win32", "/other-agent", env));
+  assert.notEqual(getBrokerSocketPath("win32", "/tmp/pi-agent", env), getBrokerSocketPath("win32", "/tmp/pi-agent", {}));
+});
+
 test("getBrokerSocketPath uses named pipe on Windows", () => {
   const pipePath = getBrokerSocketPath("win32", "C:/Users/rcroh/.pi/agent");
   assert.match(pipePath, /^\\\\\.\\pipe\\pi-intercom-/);

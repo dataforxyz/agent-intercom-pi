@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -37,7 +37,7 @@ function metadata(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 test("Boss target source is owner-checked, dynamic, and deny-all on mismatch", async () => {
-  const root = await mkdtemp(join(tmpdir(), "boss-target-source-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "boss-target-source-")));
   const directory = join(root, "intercom", "orchestrator", "boss-team-targets");
   const sourcePath = join(directory, `${runId}.json`);
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -53,6 +53,14 @@ test("Boss target source is owner-checked, dynamic, and deny-all on mismatch", a
   const scoped = readBossTeamScope(metadata({ PI_CODING_AGENT_DIR: root, AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
   assert.equal(scoped.valid, true);
   if (scoped.valid) assert.deepEqual(scoped.teamTargets, source.targets);
+
+  const relocated = readBossTeamScope(metadata({
+    PI_CODING_AGENT_DIR: join(root, "separate-pi-config"),
+    INTERCOM_DIR: join(root, "intercom"),
+    AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath,
+  }));
+  assert.equal(relocated.valid, true);
+  if (relocated.valid) assert.deepEqual(relocated.teamTargets, source.targets);
 
   await chmod(sourcePath, 0o622);
   const writable = readBossTeamScope(metadata({ PI_CODING_AGENT_DIR: root, AGENT_INTERCOM_BOSS_TEAM_TARGET_SOURCE: sourcePath }));
