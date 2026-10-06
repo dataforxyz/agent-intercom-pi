@@ -47,11 +47,20 @@ test("packed runtime installs the exact Core build without an SSH dependency", (
   );
   assert.equal(manifest.devDependencies?.["@dataforxyz/agent-intercom-core"], undefined);
 
-  for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
-    assert.notEqual(manifest.dependencies?.[name], undefined);
-    assert.equal(manifest.peerDependencies?.[name], undefined);
-    assert.equal(manifest.devDependencies?.[name], undefined);
-  }
-
   assert.equal(lock.includes("git+ssh://git@github.com/dataforxyz/agent-intercom-core"), false);
+});
+
+test("host-provided Pi packages are peers with development copies only", () => {
+  const root = new URL("..", import.meta.url);
+  const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as Record<string, any>;
+  const lock = JSON.parse(readFileSync(new URL("package-lock.json", root), "utf8"));
+
+  for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
+    assert.equal(manifest.dependencies?.[name], undefined);
+    assert.equal(manifest.peerDependencies?.[name], "*");
+    assert.notEqual(manifest.devDependencies?.[name], undefined);
+    assert.equal(lock.packages[""].dependencies?.[name], undefined);
+    assert.equal(lock.packages[""].peerDependencies?.[name], "*");
+    assert.equal(lock.packages[`node_modules/${name}`].dev, true);
+  }
 });
